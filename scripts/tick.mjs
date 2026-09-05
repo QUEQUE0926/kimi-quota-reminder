@@ -21,7 +21,7 @@ if (state.monthly_exhausted_until) {
   const until = Date.parse(state.monthly_exhausted_until);
   if (now >= until) {
     messages.push({
-      title: '✅ 月额度已重置',
+      title: '✅ Kimi Code 月额度已重置',
       body: `月额度已刷新（${fmt(now)}），5 小时 / 周 / 月全部恢复可用。`,
     });
     state.monthly_exhausted_until = null;
@@ -41,7 +41,7 @@ if (state.five_h_anchor) {
     const next = anchor + k * FIVE_H; // 下一个未来边界
     if (state.five_h_exhausted && !state.weekly_exhausted && !monthlyActive) {
       messages.push({
-        title: '✅ 5小时额度已重置',
+        title: '✅ Kimi Code 5小时额度已重置',
         body: `5 小时窗口已在 ${fmt(next - FIVE_H)} 刷新，下个边界 ${fmt(next)}。当前用量 ${state.five_h_used}/${state.five_h_limit}（以 console 为准）。`,
       });
     }
@@ -57,7 +57,7 @@ if (state.weekly_next) {
   if (now >= wn) {
     if (state.weekly_exhausted && !monthlyActive) {
       messages.push({
-        title: '✅ 周额度已重置',
+        title: '✅ Kimi Code 周额度已重置',
         body: `周额度已在 ${fmt(wn)} 刷新，5 小时窗口同步恢复。`,
       });
     }
