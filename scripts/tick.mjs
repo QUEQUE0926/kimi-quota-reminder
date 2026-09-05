@@ -23,6 +23,7 @@ if (state.monthly_exhausted_until) {
     messages.push({
       title: '✅ Kimi Code 月额度已重置',
       body: `月额度已刷新（${fmt(now)}），5 小时 / 周 / 月全部恢复可用。`,
+      ttl: 86400,
     });
     state.monthly_exhausted_until = null;
     state.monthly_signal_at = null;
@@ -43,6 +44,7 @@ if (state.five_h_anchor) {
       messages.push({
         title: '✅ Kimi Code 5小时额度已重置',
         body: `5 小时窗口已在 ${fmt(next - FIVE_H)} 刷新，下个边界 ${fmt(next)}。当前用量 ${state.five_h_used}/${state.five_h_limit}（以 console 为准）。`,
+        ttl: 86400,
       });
     }
     if (state.five_h_exhausted) state.five_h_exhausted = false;
@@ -59,6 +61,7 @@ if (state.weekly_next) {
       messages.push({
         title: '✅ Kimi Code 周额度已重置',
         body: `周额度已在 ${fmt(wn)} 刷新，5 小时窗口同步恢复。`,
+        ttl: 86400,
       });
     }
     while (wn <= now) wn += WEEK;
