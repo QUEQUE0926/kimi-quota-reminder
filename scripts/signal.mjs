@@ -25,6 +25,7 @@ const TIER_NAMES = { '5h': '5 小时额度', weekly: '周额度', monthly: '月�
 const newlyExhausted = []; // 本次运行中新置位的打满层级（用于「额度用光」active 提醒）
 
 // 「额度用光」提醒：仅在某层新打满时推一次（active 级别）
+// ttl = 距重置的秒数：重置后这条通知就是废纸，自动从 Bark 历史里删掉；重置时间未知则不设 ttl
 async function notifyExhausted(tier) {
   const when =
     tier === '5h' ? state.five_h_anchor
@@ -34,7 +35,8 @@ async function notifyExhausted(tier) {
     ? `预计 ${fmt(when)} 重置。` +
       (tier === 'monthly' ? '月额度重置前，5 小时 / 周额度即使到点重置也不可用。' : '')
     : '重置时间未知。';
-  await pushAll({ title: `⚠️ Kimi Code ${TIER_NAMES[tier]}已用完`, body });
+  const ttl = when ? Math.max(60, Math.round((Date.parse(when) - Date.now()) / 1000)) : undefined;
+  await pushAll({ title: `⚠️ Kimi Code ${TIER_NAMES[tier]}已用完`, body, ttl });
 }
 
 // 由订阅锚点递推月重置：同一日期数字、同一时刻，逐月推进（日期不存在时钳到月末）
