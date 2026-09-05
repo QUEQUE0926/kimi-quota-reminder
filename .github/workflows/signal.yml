@@ -3,6 +3,19 @@ name: signal
 on:
   repository_dispatch:
     types: [quota-sync, quota-exhausted, quota-close]
+  # 手动测试入口：Run workflow 时可选分支（测试请选 dev/multi-platform，勿污染 main 状态）
+  workflow_dispatch:
+    inputs:
+      event_type:
+        description: 信号类型
+        required: true
+        type: choice
+        options: [quota-sync, quota-exhausted, quota-close]
+      payload:
+        description: 'client_payload（JSON，如 {"tier":"5h"}）'
+        required: false
+        type: string
+        default: '{}'
 
 permissions:
   contents: write
@@ -23,8 +36,8 @@ jobs:
 
       - name: Apply signal to state
         env:
-          EVENT_ACTION: ${{ github.event.action }}
-          CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          EVENT_ACTION: ${{ github.event.action || inputs.event_type }}
+          CLIENT_PAYLOAD: ${{ inputs.payload || toJson(github.event.client_payload) }}
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           BARK_KEY: ${{ secrets.BARK_KEY }}
