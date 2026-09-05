@@ -7,8 +7,8 @@
   "weekly_limit": 100,
   "five_h_exhausted": false,
   "weekly_exhausted": false,
-  "monthly_exhausted_until": null,
-  "monthly_signal_at": null,
+  "monthly_exhausted_until": "2026-10-05T14:00:18.476Z",
+  "monthly_signal_at": "2026-09-05T21:46:41.448Z",
   "last_sync": "2026-09-05T21:33:28.036Z",
   "monthly_anchor": "2026-09-05T14:00:18.476840Z"
 }
