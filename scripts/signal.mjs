@@ -16,6 +16,24 @@ let changed = false;
 
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
+// 由订阅锚点递推月重置：同一日期数字、同一时刻，逐月推进（日期不存在时钳到月末）
+function nextMonthlyReset(anchorIso, afterMs) {
+  const a = new Date(anchorIso);
+  const day = a.getUTCDate();
+  const after = new Date(afterMs);
+  let y = after.getUTCFullYear();
+  let m = after.getUTCMonth();
+  for (let i = 0; i < 36; i++) {
+    const dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    const t = Date.UTC(y, m, Math.min(day, dim),
+      a.getUTCHours(), a.getUTCMinutes(), a.getUTCSeconds(), a.getUTCMilliseconds());
+    if (t > afterMs) return new Date(t).toISOString();
+    m += 1;
+    if (m > 11) { m = 0; y += 1; }
+  }
+  throw new Error('nextMonthlyReset: no boundary found within 36 months');
+}
+
 if (eventType === 'quota-sync') {
   const { five_h, weekly, monthly, raw } = payload;
 
@@ -77,9 +95,14 @@ if (eventType === 'quota-sync') {
     console.log('exhausted: weekly flag set');
     changed = true;
   } else if (tier === 'monthly') {
-    // 月重置时间无法自动获知（方案 §7）：只记信号时间，until 由 workflow C 手动填
     state.monthly_signal_at = nowIso;
-    console.log('exhausted: monthly signal recorded; set monthly_exhausted_until via the manual workflow');
+    if (state.monthly_anchor) {
+      state.monthly_exhausted_until = nextMonthlyReset(state.monthly_anchor, Date.now());
+      console.log(`exhausted: monthly, until auto-computed from anchor -> ${state.monthly_exhausted_until}`);
+    } else {
+      // 无锚点时的兜底：只能手动填（manual workflow 的 monthly_cap / set_monthly_anchor）
+      console.log('exhausted: monthly signal recorded; no monthly_anchor, set it via the manual workflow');
+    }
     changed = true;
   } else {
     console.log(`exhausted: unknown tier "${tier}", payload ignored`);
