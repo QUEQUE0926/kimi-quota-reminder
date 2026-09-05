@@ -26,6 +26,11 @@ switch (action) {
     console.log(`weekly_next = ${state.weekly_next}`);
     changed = true;
     break;
+  case 'set_monthly_anchor':
+    state.monthly_anchor = parseTime(value);
+    console.log(`monthly_anchor = ${state.monthly_anchor}（月重置按此锚点逐月递推）`);
+    changed = true;
+    break;
   case 'monthly_cap':
     state.monthly_exhausted_until = parseTime(value);
     state.monthly_signal_at = null;
