@@ -21,6 +21,22 @@ const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const fmt = (iso) =>
   iso ? new Date(iso).toLocaleString('zh-CN', { timeZone: TZ, hour12: false }) : '未知';
 
+const TIER_NAMES = { '5h': '5 小时额度', weekly: '周额度', monthly: '月额度' };
+const newlyExhausted = []; // 本次运行中新置位的打满层级（用于「额度用光」active 提醒）
+
+// 「额度用光」提醒：仅在某层新打满时推一次（active 级别）
+async function notifyExhausted(tier) {
+  const when =
+    tier === '5h' ? state.five_h_anchor
+    : tier === 'weekly' ? state.weekly_next
+    : state.monthly_exhausted_until;
+  const body = when
+    ? `预计 ${fmt(when)} 重置。` +
+      (tier === 'monthly' ? '月额度重置前，5 小时 / 周额度即使到点重置也不可用。' : '')
+    : '重置时间未知。';
+  await pushAll({ title: `⚠️ ${TIER_NAMES[tier]}已用完`, body });
+}
+
 // 由订阅锚点递推月重置：同一日期数字、同一时刻，逐月推进（日期不存在时钳到月末）
 function nextMonthlyReset(anchorIso, afterMs) {
   const a = new Date(anchorIso);
@@ -50,7 +66,10 @@ function applySync(p) {
   if (num(weekly?.used) !== null) state.weekly_used = weekly.used;
   if (num(weekly?.limit) !== null) state.weekly_limit = weekly.limit;
   if (num(weekly?.used) !== null && num(weekly?.limit) > 0 && weekly.used >= weekly.limit) {
-    if (!state.weekly_exhausted) console.log('sync: weekly exhausted (missed by StopFailure hook), flag set');
+    if (!state.weekly_exhausted) {
+      console.log('sync: weekly exhausted (missed by StopFailure hook), flag set');
+      newlyExhausted.push('weekly');
+    }
     state.weekly_exhausted = true;
   }
 
@@ -74,7 +93,10 @@ function applySync(p) {
   if (num(five_h?.used) !== null) state.five_h_used = five_h.used;
   if (num(five_h?.limit) !== null) state.five_h_limit = five_h.limit;
   if (num(five_h?.used) !== null && num(five_h?.limit) > 0 && five_h.used >= five_h.limit) {
-    if (!state.five_h_exhausted) console.log('sync: 5h exhausted (missed by StopFailure hook), flag set');
+    if (!state.five_h_exhausted) {
+      console.log('sync: 5h exhausted (missed by StopFailure hook), flag set');
+      newlyExhausted.push('5h');
+    }
     state.five_h_exhausted = true;
   }
 
@@ -82,6 +104,7 @@ function applySync(p) {
   if (monthly?.reset_at) {
     console.log(`sync: monthly window present in API: ${JSON.stringify(monthly)}`);
     if (num(monthly?.used) !== null && num(monthly?.limit) > 0 && monthly.used >= monthly.limit) {
+      if (!state.monthly_exhausted_until) newlyExhausted.push('monthly');
       state.monthly_exhausted_until = monthly.reset_at;
       console.log('sync: monthly exhausted, until set automatically');
     }
@@ -141,25 +164,41 @@ async function pushCloseSummary(p) {
   await pushAll({
     title: '📴 Kimi Code 已关闭 · 额度快照',
     body: lines.join('\n'),
+    level: 'passive', // 只进通知列表，不亮屏
+    ttl: 86400, // Bark 历史记录保存 1 天
   });
 }
 
 if (eventType === 'quota-sync') {
   applySync(payload);
+  // StopFailure 漏报、由同步兜底发现的打满：补发「额度用光」提醒
+  for (const t of newlyExhausted) await notifyExhausted(t);
 } else if (eventType === 'quota-close') {
   applySync(payload);
+  // 关闭快照已包含各层状态，不再单独发打满提醒
   await pushCloseSummary(payload);
 } else if (eventType === 'quota-exhausted') {
   const tier = payload.tier;
   if (tier === '5h') {
-    state.five_h_exhausted = true;
+    if (!state.five_h_exhausted) {
+      state.five_h_exhausted = true;
+      await notifyExhausted('5h');
+    } else {
+      console.log('exhausted: 5h flag already set, no duplicate push');
+    }
     console.log('exhausted: 5h flag set');
     changed = true;
   } else if (tier === 'weekly') {
-    state.weekly_exhausted = true;
+    if (!state.weekly_exhausted) {
+      state.weekly_exhausted = true;
+      await notifyExhausted('weekly');
+    } else {
+      console.log('exhausted: weekly flag already set, no duplicate push');
+    }
     console.log('exhausted: weekly flag set');
     changed = true;
   } else if (tier === 'monthly') {
+    const wasActive = !!state.monthly_exhausted_until;
     state.monthly_signal_at = nowIso;
     if (state.monthly_anchor) {
       state.monthly_exhausted_until = nextMonthlyReset(state.monthly_anchor, Date.now());
@@ -168,6 +207,7 @@ if (eventType === 'quota-sync') {
       // 无锚点时的兜底：只能手动填（manual workflow 的 monthly_cap / set_monthly_anchor）
       console.log('exhausted: monthly signal recorded; no monthly_anchor, set it via the manual workflow');
     }
+    if (!wasActive) await notifyExhausted('monthly');
     changed = true;
   } else {
     console.log(`exhausted: unknown tier "${tier}", payload ignored`);
