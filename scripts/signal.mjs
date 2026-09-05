@@ -11,7 +11,7 @@ const ALIGN_TOLERANCE = 2 * 60 * 1000; // anchor 校准容差：2 分钟
 const TZ = 'Asia/Shanghai';
 
 const eventType = process.env.EVENT_ACTION; // repository_dispatch 的 event_type
-const payload = JSON.parse(process.env.CLIENT_PAYLOAD || '{}');
+const payload = JSON.parse(process.env.CLIENT_PAYLOAD || '{}') || {};
 
 const state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
 const nowIso = new Date().toISOString();
