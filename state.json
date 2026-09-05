@@ -1,0 +1,13 @@
+{
+  "five_h_anchor": null,
+  "five_h_used": 0,
+  "five_h_limit": 0,
+  "weekly_next": null,
+  "weekly_used": 0,
+  "weekly_limit": 0,
+  "five_h_exhausted": false,
+  "weekly_exhausted": false,
+  "monthly_exhausted_until": null,
+  "monthly_signal_at": null,
+  "last_sync": null
+}
