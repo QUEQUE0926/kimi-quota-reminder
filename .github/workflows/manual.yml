@@ -1,0 +1,50 @@
+name: manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 操作类型
+        required: true
+        type: choice
+        options:
+          - test_push
+          - set_anchor
+          - set_weekly_next
+          - monthly_cap
+          - clear_flags
+      value:
+        description: 时间值（set_*/monthly_cap 必填，ISO 8601 如 2026-09-06T01:30:00+08:00）
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  manual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run manual action
+        env:
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_VALUE: ${{ inputs.value }}
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+          BARK_SERVER: ${{ vars.BARK_SERVER }}
+        run: node scripts/manual.mjs
+
+      - name: Commit state
+        run: |
+          git config user.name "quota-reminder-bot"
+          git config user.email "quota-reminder-bot@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || git commit -m "manual: ${{ inputs.action }}"
+          git push
