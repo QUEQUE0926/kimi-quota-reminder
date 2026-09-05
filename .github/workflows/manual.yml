@@ -47,4 +47,10 @@ jobs:
           git config user.email "quota-reminder-bot@users.noreply.github.com"
           git add state.json
           git diff --cached --quiet || git commit -m "manual: ${{ inputs.action }}"
-          git push
+          ok=
+          for i in 1 2 3; do
+            git pull --rebase -X ours origin main || true
+            if git push; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ]
