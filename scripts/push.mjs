@@ -1,0 +1,82 @@
+// 三通道推送：企业微信群机器人 + ntfy.sh + Bark（iOS）
+// 三路独立 try/catch，一路失败不挡另一路；缺少某个 secret 时跳过该路。
+import { pathToFileURL } from 'node:url';
+
+export async function pushAll({ title, body }) {
+  const results = [];
+
+  const webhook = process.env.WECOM_WEBHOOK;
+  if (webhook) {
+    try {
+      const res = await fetch(webhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          msgtype: 'markdown',
+          markdown: { content: `## ${title}\n\n${body}` },
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (j.errcode) throw new Error(`errcode=${j.errcode} ${j.errmsg || ''}`);
+      results.push('wecom: ok');
+    } catch (e) {
+      results.push(`wecom: FAIL ${e.message}`);
+    }
+  } else {
+    results.push('wecom: skipped (WECOM_WEBHOOK not set)');
+  }
+
+  const topic = process.env.NTFY_TOPIC;
+  if (topic) {
+    try {
+      const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
+        method: 'POST',
+        headers: { Title: title, Priority: '4', Tags: 'white_check_mark' },
+        body,
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      results.push('ntfy: ok');
+    } catch (e) {
+      results.push(`ntfy: FAIL ${e.message}`);
+    }
+  } else {
+    results.push('ntfy: skipped (NTFY_TOPIC not set)');
+  }
+
+  const barkKey = process.env.BARK_KEY;
+  if (barkKey) {
+    try {
+      const server = (process.env.BARK_SERVER || 'https://api.day.app').replace(/\/$/, '');
+      const res = await fetch(`${server}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device_key: barkKey,
+          title,
+          body,
+          group: 'Kimi Code 额度',
+          level: 'timeSensitive',
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (j.code !== 200) throw new Error(`code=${j.code} ${j.message || ''}`);
+      results.push('bark: ok');
+    } catch (e) {
+      results.push(`bark: FAIL ${e.message}`);
+    }
+  } else {
+    results.push('bark: skipped (BARK_KEY not set)');
+  }
+
+  for (const r of results) console.log(r);
+  return results;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const title = process.env.MSG_TITLE || 'Kimi Code 额度提醒';
+  const body = process.env.MSG_BODY || '(empty)';
+  pushAll({ title, body });
+}
