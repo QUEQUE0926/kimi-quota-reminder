@@ -11,6 +11,7 @@ on:
           - test_push
           - set_anchor
           - set_weekly_next
+          - set_monthly_anchor
           - monthly_cap
           - clear_flags
       value:
