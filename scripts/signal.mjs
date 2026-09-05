@@ -34,7 +34,7 @@ async function notifyExhausted(tier) {
     ? `预计 ${fmt(when)} 重置。` +
       (tier === 'monthly' ? '月额度重置前，5 小时 / 周额度即使到点重置也不可用。' : '')
     : '重置时间未知。';
-  await pushAll({ title: `⚠️ ${TIER_NAMES[tier]}已用完`, body });
+  await pushAll({ title: `⚠️ Kimi Code ${TIER_NAMES[tier]}已用完`, body });
 }
 
 // 由订阅锚点递推月重置：同一日期数字、同一时刻，逐月推进（日期不存在时钳到月末）
