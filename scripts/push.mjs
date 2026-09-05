@@ -1,8 +1,10 @@
 // 三通道推送：企业微信群机器人 + ntfy.sh + Bark（iOS）
 // 三路独立 try/catch，一路失败不挡另一路；缺少某个 secret 时跳过该路。
+// level/ttl 仅 Bark 支持：level 默认 active（亮屏提醒），passive 只进通知列表；
+// ttl 为历史记录保存秒数（如 86400 = 1 天）。
 import { pathToFileURL } from 'node:url';
 
-export async function pushAll({ title, body }) {
+export async function pushAll({ title, body, level, ttl }) {
   const results = [];
 
   const webhook = process.env.WECOM_WEBHOOK;
@@ -57,7 +59,8 @@ export async function pushAll({ title, body }) {
           title,
           body,
           group: 'Kimi Code 额度',
-          level: 'timeSensitive',
+          level: level || 'active',
+          ...(ttl ? { ttl } : {}),
         }),
         signal: AbortSignal.timeout(10000),
       });
