@@ -12,8 +12,18 @@ on:
           - set_anchor
           - set_weekly_next
           - set_monthly_anchor
+          - set_monthly_next
           - monthly_cap
           - clear_flags
+      platform:
+        description: 平台（kimi / codex / workbuddy，默认 kimi）
+        required: false
+        type: choice
+        default: kimi
+        options:
+          - kimi
+          - codex
+          - workbuddy
       value:
         description: 时间值（set_*/monthly_cap 必填，ISO 8601 如 2026-09-06T01:30:00+08:00）
         required: false
@@ -36,6 +46,7 @@ jobs:
         env:
           INPUT_ACTION: ${{ inputs.action }}
           INPUT_VALUE: ${{ inputs.value }}
+          INPUT_PLATFORM: ${{ inputs.platform }}
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           BARK_KEY: ${{ secrets.BARK_KEY }}
@@ -54,7 +65,7 @@ jobs:
           git config user.name "quota-reminder-bot"
           git config user.email "quota-reminder-bot@users.noreply.github.com"
           git add state.json
-          git diff --cached --quiet || git commit -m "manual: ${{ inputs.action }}"
+          git diff --cached --quiet || git commit -m "manual: ${{ inputs.action }} (${{ inputs.platform }})"
           cur=$(git symbolic-ref --short HEAD 2>/dev/null || echo main)
           ok=
           for i in 1 2 3; do
