@@ -32,6 +32,11 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  # 与 tick/signal 共用 group：manual 校准和 tick 边界提交并发会互相吞状态。
+  group: quota-state-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   manual:
     runs-on: ubuntu-latest
