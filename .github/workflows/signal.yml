@@ -21,7 +21,9 @@ permissions:
   contents: write
 
 concurrency:
-  group: quota-signal
+  # 与 tick/manual 共用 group（见 tick.yml 注释）：signal 排队等 state.json 写入方释放，
+  # 避免 rebase -X ours 静默丢状态。打满提醒晚 1 分钟 < 状态静默损坏。
+  group: quota-state-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
