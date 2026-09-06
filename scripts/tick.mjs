@@ -16,6 +16,12 @@ const now = Date.now();
 let changed = false;
 const messages = [];
 
+// 用量 ≥80% 视为「接近不可用」：即使没打满，重置时也提醒（用最近一次上报的用量判断，
+// CLI 关着也不影响）。打满过用 ✅，仅高用量用 ℹ️。
+const HIGH_USAGE = 0.8;
+const usagePct = (used, limit) => (limit > 0 ? used / limit : 0);
+const pctText = (used, limit) => `${Math.round(usagePct(used, limit) * 100)}%（${used}/${limit}）`;
+
 // ---- 月层 ----
 if (state.monthly_exhausted_until) {
   const until = Date.parse(state.monthly_exhausted_until);
@@ -40,10 +46,14 @@ if (state.five_h_anchor) {
   if (now >= anchor) {
     const k = Math.floor((now - anchor) / FIVE_H) + 1;
     const next = anchor + k * FIVE_H; // 下一个未来边界
-    if (state.five_h_exhausted && !state.weekly_exhausted && !monthlyActive) {
+    const wasOut = state.five_h_exhausted;
+    const highUsage = usagePct(state.five_h_used, state.five_h_limit) >= HIGH_USAGE;
+    if ((wasOut || highUsage) && !state.weekly_exhausted && !monthlyActive) {
       messages.push({
-        title: '✅ Kimi Code 5小时额度已重置',
-        body: `5 小时窗口已在 ${fmt(next - FIVE_H)} 刷新，下个边界 ${fmt(next)}。当前用量 ${state.five_h_used}/${state.five_h_limit}（以 console 为准）。`,
+        title: wasOut ? '✅ Kimi Code 5小时额度已重置' : 'ℹ️ Kimi Code 5小时额度已重置',
+        body: wasOut
+          ? `5 小时窗口已在 ${fmt(next - FIVE_H)} 刷新（上周期已打满），下个边界 ${fmt(next)}。`
+          : `5 小时窗口已在 ${fmt(next - FIVE_H)} 刷新，下个边界 ${fmt(next)}。上周期用量 ${pctText(state.five_h_used, state.five_h_limit)}，未打满（以 console 为准）。`,
         ttl: 86400,
       });
     }
@@ -57,10 +67,14 @@ if (state.five_h_anchor) {
 if (state.weekly_next) {
   let wn = Date.parse(state.weekly_next);
   if (now >= wn) {
-    if (state.weekly_exhausted && !monthlyActive) {
+    const wasOut = state.weekly_exhausted;
+    const highUsage = usagePct(state.weekly_used, state.weekly_limit) >= HIGH_USAGE;
+    if ((wasOut || highUsage) && !monthlyActive) {
       messages.push({
-        title: '✅ Kimi Code 周额度已重置',
-        body: `周额度已在 ${fmt(wn)} 刷新，5 小时窗口同步恢复。`,
+        title: wasOut ? '✅ Kimi Code 周额度已重置' : 'ℹ️ Kimi Code 周额度已重置',
+        body: wasOut
+          ? `周额度已在 ${fmt(wn)} 刷新（上周期已打满），5 小时窗口同步恢复。`
+          : `周额度已在 ${fmt(wn)} 刷新，5 小时窗口同步恢复。上周期用量 ${pctText(state.weekly_used, state.weekly_limit)}，未打满。`,
         ttl: 86400,
       });
     }
