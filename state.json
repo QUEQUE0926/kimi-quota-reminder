@@ -1,6 +1,6 @@
 {
   "five_h_anchor": "2026-09-06T20:00:18.476Z",
-  "five_h_used": 22,
+  "five_h_used": 0,
   "five_h_limit": 100,
   "weekly_next": "2026-09-12T14:00:18.476840Z",
   "weekly_used": 49,
@@ -9,6 +9,6 @@
   "weekly_exhausted": false,
   "monthly_exhausted_until": null,
   "monthly_signal_at": null,
-  "last_sync": "2026-09-06T14:30:17.612Z",
+  "last_sync": "2026-09-06T15:37:36.653Z",
   "monthly_anchor": "2026-09-05T14:00:18.476840Z"
 }
