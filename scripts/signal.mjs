@@ -157,8 +157,9 @@ function applySyncWorkbuddy(p) {
   } else if (monthly?.reset_at && !isEnterprise) {
     console.log(`sync(workbuddy): ${p.account_type || 'personal'} account, reset_at observe-only (no anchor calibration)`);
   }
-  if (num(monthly?.used) !== null) ps.monthly_used = monthly.used;
-  if (num(monthly?.limit) !== null) ps.monthly_limit = monthly.limit;
+  if (num(monthly?.used) !== null) ps.monthly_used = Math.round(monthly.used); // int 存储（credits 展示不需要小数）
+  if (num(monthly?.limit) !== null) ps.monthly_limit = Math.round(monthly.limit);
+  // 打满判定用上报的原始值（四舍五入前先比，避免 99.6→100 提前误报）
   if (num(monthly?.used) !== null && num(monthly?.limit) > 0) {
     if (monthly.used >= monthly.limit) {
       if (!ps.monthly_exhausted) {
@@ -244,8 +245,42 @@ async function pushCloseSummaryGeneric() {
     lines.push(`周额度：${ps.weekly_exhausted ? '已用完' : '正常'}，下次重置 ${fmt(ps.weekly_next)}`);
   }
   if (PLATFORMS[platform].tiers.includes('monthly')) {
-    lines.push(`月额度：下次重置 ${fmt(ps.monthly_next)}`);
+    // workbuddy：state 已有真实用量（watcher 上报），带上百分比
+    const usage =
+      Number.isFinite(ps.monthly_used) && Number.isFinite(ps.monthly_limit) && ps.monthly_limit > 0
+        ? `，用量 ${Math.round((ps.monthly_used / ps.monthly_limit) * 100)}%（${ps.monthly_used}/${ps.monthly_limit}）`
+        : '';
+    const state_ = ps.monthly_exhausted ? '已用完' : '正常';
+    lines.push(`月额度：${state_}${usage}，下次重置 ${fmt(ps.monthly_next)}`);
   }
+  // workbuddy 的 close 是 watcher 每日快照（非应用退出），标题不说「已关闭」
+  const title = platform === 'workbuddy'
+    ? `📴 ${label} 额度快照`
+    : `📴 ${label} 已关闭 · 额度快照`;
+  await pushAll({
+    title,
+    body: lines.join('\n'),
+    level: 'passive',
+    ttl: 86400,
+    platform: label,
+  });
+}
+
+// Codex 关闭快照：watcher 在 Codex 退出时上报最后一条会话日志快照，带真实百分比。
+// 云端先 applySyncCodex（周校准）再出 passive 摘要（用量不落 state，只渲染）。
+async function pushCloseSummaryCodex(p) {
+  const fhPct = num(p.five_h?.used_percent);
+  const wkPct = num(p.weekly?.used_percent);
+  const lines = [
+    ps.five_h_anchor
+      ? `5 小时窗口：${ps.five_h_exhausted ? '已用完' : '进行中'}` +
+        (fhPct !== null ? `，用量 ${Math.round(fhPct)}%` : '') +
+        `，${fmt(p.five_h?.reset_at || ps.five_h_anchor)} 结束`
+      : '5 小时窗口：未开启（下次会话开始时计时）',
+    `周额度：${ps.weekly_exhausted ? '已用完' : '正常'}` +
+      (wkPct !== null ? `，用量 ${Math.round(wkPct)}%` : '') +
+      `，下次重置 ${fmt(p.weekly?.reset_at || ps.weekly_next)}`,
+  ];
   await pushAll({
     title: `📴 ${label} 已关闭 · 额度快照`,
     body: lines.join('\n'),
@@ -349,6 +384,15 @@ if (eventType === 'quota-sync') {
     applySyncKimi(payload);
     // 关闭快照已包含各层状态，不再单独发打满提醒
     await pushCloseSummaryKimi(payload);
+  } else if (platform === 'codex') {
+    // watcher 在 Codex 退出时触发：payload 带最后快照，先校准周锚点再出摘要
+    applySyncCodex(payload);
+    await pushCloseSummaryCodex(payload);
+  } else if (platform === 'workbuddy') {
+    // watcher 每日 23 点触发：payload 带当月用量，先同步 state 再出摘要
+    applySyncWorkbuddy(payload);
+    for (const t of newlyExhausted) await notifyExhausted(t);
+    await pushCloseSummaryGeneric();
   } else {
     await pushCloseSummaryGeneric();
   }
