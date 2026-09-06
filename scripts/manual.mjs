@@ -76,6 +76,10 @@ switch (action) {
     if ('monthly_exhausted' in ps) { ps.monthly_exhausted = false; cleared.push('monthly_exhausted'); }
     if ('monthly_exhausted_until' in ps) { ps.monthly_exhausted_until = null; cleared.push('monthly_exhausted_until'); }
     if ('monthly_signal_at' in ps) { ps.monthly_signal_at = null; cleared.push('monthly_signal_at'); }
+    // 档位阶梯字段一并复位（§12.1）
+    if ('five_h_alert' in ps) { ps.five_h_alert = 0; cleared.push('five_h_alert'); }
+    if ('weekly_alert' in ps) { ps.weekly_alert = 0; cleared.push('weekly_alert'); }
+    if ('monthly_alert' in ps) { ps.monthly_alert = 0; cleared.push('monthly_alert'); }
     console.log(cleared.length
       ? `${platform}: all exhausted flags cleared (${cleared.join(', ')})`
       : `${platform}: no exhausted flags on this platform, nothing to clear`);
