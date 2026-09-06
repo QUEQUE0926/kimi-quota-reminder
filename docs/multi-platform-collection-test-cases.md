@@ -176,3 +176,67 @@ Register-ScheduledTask -TaskName 'KimiQuotaCodexWatcher' -Action $action -Trigge
 ```
 
 合并 main 后把 `--ref=dev/multi-platform` 去掉重新注册即可切到生产形态（repository_dispatch）。
+
+---
+
+## 自适应轮询 v2 用例（CW-13 ~ CW-20）
+
+> 配套方案：`multi-platform-collection.md` §7。前置：v2 版 watcher 已部署；计划任务已重建为 wscript 无窗口 + 30 分钟（§7.5）。
+> 构造快照统一用 `--snapshot-json` 调试模式（同 CW-07），全程只读 `.codex`。
+
+## CW-13 · 基线降频 30 分钟生效
+
+- 检查：计划任务 `KimiQuotaCodexWatcher` 触发间隔 = 30 分钟；动作 = `wscript.exe ... codex-watcher.hidden.vbs`
+- 操作：不碰 Codex，观察两轮以上
+- 预期：日志每 30 分钟一条 `no new snapshot, skip`，毫秒级退出；期间**无任何窗口弹出**；云端 state 无变化
+
+## CW-14 · 每日全量扫描（跨天校准）
+
+- 操作：把 state 里 `last_daily_scan` 改成昨天日期，手动跑一轮 watcher
+- 预期：日志 `daily full scan`（全量解析最新快照并与云端对账，但**不补发 session-activity**）；`last_daily_scan` 更新为今天；当天后续轮日志 `daily scan already done, skip`
+
+## CW-15 · 关闭 Codex 补扫
+
+- 操作（模拟）：用调试开关注入进程探测结果「上一轮在 → 本轮不在」；或真实操作：开着 Codex 桌面端跑一轮 watcher，再退出 Codex 跑下一轮
+- 预期：发现退出转换的当轮日志 `codex exited, running catch-up scan`，执行一次全量扫描；若有未上报快照则补发 `session-activity`；state `prev_codex_running=false`
+
+## CW-16 · 临额升频进入
+
+- 操作：构造快照 `primary.used_percent=85`（剩余 15%），并满足活跃条件（快照时间戳在 15 分钟内）；手动跑 watcher
+- 预期：日志 `boost mode entered (5h 85%, active)`；进程**不退出**，驻留每 5 分钟一轮；基线 30 分钟任务下一轮触发时因单实例锁秒退（见 CW-18）
+
+## CW-17 · 升频退出 + 安全上限
+
+- 操作 a（条件消失）：CW-16 驻留中，构造新快照 `used_percent=60` → 预期日志 `boost mode exited`，进程退出，回到基线
+- 操作 b（打满即退出升频）：构造 `used_percent=100` → 发 `quota-exhausted` 后退出驻留（打满后无需再高频）
+- 操作 c（不活跃）：快照时间戳保持 >15 分钟无更新且进程不在 → 退出驻留
+- 操作 d（安全上限）：用调试开关把驻留起点拨到 6 小时前 → 当轮日志 `boost dwell limit reached, exit` 强制退出
+
+## CW-18 · 单实例锁
+
+- 操作 a：驻留进行中手动再启一个 watcher → 第二个检测到锁（mtime < 10 分钟）日志 `lock held by live instance, exit` 立即退出，不发任何信号
+- 操作 b：把锁文件 mtime 拨到 10 分钟前再启动 → 日志 `stale lock taken over`，正常接管执行
+
+## CW-19 · 层级闸门：周打满跳过 5h
+
+- 操作：构造快照 `secondary.used_percent=100`（周打满）+ `primary.used_percent=85`（本满足升频）
+- 预期：发 `quota-exhausted(weekly)` 后——**不发**任何 5h 相关信号，**不进**升频模式；日志 `weekly exhausted, 5h signals suppressed`
+- 再构造周重置后快照（`secondary.used_percent=0`）→ 一切恢复，5h 信号与升频判定照常
+- 测完 `clear_flags`（platform=codex）清理
+
+## CW-20 · 无窗口运行验证（人工）
+
+- 操作：计划任务自然触发一轮，人在电脑前观察
+- 预期：无任何控制台窗口闪现；日志正常新增一条记录
+
+---
+
+## v2 全部测完后的检查清单
+
+- [ ] 基线 30 分钟 + 无窗口（CW-13、CW-20）
+- [ ] 每日全量只扫不发（CW-14）
+- [ ] 关闭补扫（CW-15）
+- [ ] 升频进入 / 退出三条件 / 安全上限（CW-16、CW-17）
+- [ ] 单实例锁防重叠 + 僵死接管（CW-18）
+- [ ] 周打满跳过 5h，恢复后正常（CW-19）
+- [ ] main 分支代码、state、tag `v1.0-single-platform` 全程零改动
