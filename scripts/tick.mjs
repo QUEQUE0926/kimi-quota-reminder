@@ -19,6 +19,9 @@ const messages = [];
 const usagePct = (used, limit) => (limit > 0 ? used / limit : 0);
 const pctText = (used, limit) => `${Math.round(usagePct(used, limit) * 100)}%（${used}/${limit}）`;
 
+// 档位清零（MP 方案 §12.3 清零矩阵）：窗口重置后 *_alert 归 0，下一周期重新起档
+const clearAlert = (ps, field) => { ps[`${field}_alert`] = 0; };
+
 // ---- Kimi：固定时刻表，三层，月 > 周 > 5h 层级闸门（行为与单平台版完全一致） ----
 function tickKimi(ps, label) {
   // 月层
@@ -35,6 +38,8 @@ function tickKimi(ps, label) {
       ps.monthly_signal_at = null;
       ps.five_h_exhausted = false;
       ps.weekly_exhausted = false;
+      clearAlert(ps, 'five_h'); // 月重置连带清低层档位（§12.3）
+      clearAlert(ps, 'weekly');
       changed = true;
     }
   }
@@ -58,6 +63,7 @@ function tickKimi(ps, label) {
         });
       }
       if (ps.five_h_exhausted) ps.five_h_exhausted = false;
+      clearAlert(ps, 'five_h');
       ps.five_h_anchor = new Date(next).toISOString();
       changed = true;
     }
@@ -82,6 +88,8 @@ function tickKimi(ps, label) {
       ps.weekly_next = new Date(wn).toISOString();
       ps.weekly_exhausted = false;
       ps.five_h_exhausted = false; // 周重置后 5h 必然也是满的
+      clearAlert(ps, 'weekly'); // 档位连带清零（§12.3）
+      clearAlert(ps, 'five_h');
       changed = true;
     }
   }
@@ -108,6 +116,7 @@ function tickCodex(ps, label) {
         console.log('codex: 5h boundary crossed but weekly exhausted, push suppressed (层级闸门)');
       }
       ps.five_h_exhausted = false;
+      clearAlert(ps, 'five_h'); // 窗口到期档位清零（§12.3）
       ps.five_h_anchor = null;
       changed = true;
     }
@@ -130,6 +139,8 @@ function tickCodex(ps, label) {
       ps.weekly_next = new Date(wn).toISOString();
       ps.weekly_exhausted = false;
       ps.five_h_exhausted = false;
+      clearAlert(ps, 'weekly'); // 档位连带清零（§12.3）
+      clearAlert(ps, 'five_h');
       changed = true;
     }
   }
@@ -164,6 +175,7 @@ function tickWorkbuddy(ps, label) {
     });
     ps.monthly_next = next;
     ps.monthly_exhausted = false; // 月重置连带清打满闸门
+    clearAlert(ps, 'monthly'); // 档位清零（§12.3）
     changed = true;
   }
 }
