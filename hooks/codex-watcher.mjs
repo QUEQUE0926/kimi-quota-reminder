@@ -15,6 +15,8 @@
 //
 // 去重：状态文件记录上次上报的快照时间戳与各打满窗口的 reset_at；同一窗口的打满只报一次，
 // 云端另有打满标志去重兜底。首次运行以当前快照为基线，不补发历史 session-activity（CW-11）。
+// 限流：每轮最多发一个信号（优先级 quota-exhausted > session-activity > quota-sync），
+// 其余下一轮补发——同秒并发的两个 signal run 会因云端 commit 的 -X ours 冲突解决丢状态。
 //
 // 传输（云端仓库防污染）：
 //   缺省           repository_dispatch（生产形态，合并 main 后由默认分支 workflow 处理）
@@ -215,6 +217,33 @@ async function main() {
   const state = loadState();
   const tiers = exhaustedTiers(rl);
 
+  // 每轮最多发一个信号（优先级 quota-exhausted > session-activity > quota-sync），
+  // 其余推迟到下一轮。原因：云端 signal.yml 的并发组挡不住同秒触发，两个 run 并行
+  // checkout 同一 state、commit 相邻字段冲突时被 -X ours 整段覆盖，后到的信号状态会丢
+  // （2026-09-06 CW-07 首测实测暴露）。轮询间隔 5 分钟 ≫ run 时长，逐轮补发无损失。
+  const pending = []; // { eventType, payload, apply() }
+
+  // 打满上报（本地按 reset_at 去重；云端打满标志兜底；一轮最多报一个层级，周层优先——
+  // 层级闸门下周打满本来就压制 5h 提醒，5h 打满下一轮再报不迟）
+  for (const tier of ['weekly', '5h']) {
+    if (!tiers.includes(tier)) {
+      // 窗口恢复正常后清掉去重键，下次打满（新窗口）可再次上报
+      delete state.reported_exhausted[tier];
+      continue;
+    }
+    const ra = resetAtOf(rl, tier);
+    if (ra && state.reported_exhausted[tier] === ra) {
+      log(`${tier} exhausted already reported, skip`);
+      continue;
+    }
+    pending.push({
+      eventType: 'quota-exhausted',
+      payload: ra ? { tier, reset_at: ra } : { tier },
+      apply: () => { if (ra) state.reported_exhausted[tier] = ra; },
+    });
+    break;
+  }
+
   // 首次运行（无状态文件）：当前快照记为基线，不补发历史 session-activity（CW-11）；
   // 打满窗口也记入基线（避免因过期快照刷 ⚠️）；随后照常做 quota-sync 校准。
   if (!state.last_activity_at) {
@@ -222,30 +251,18 @@ async function main() {
       const ra = resetAtOf(rl, tier);
       if (ra) state.reported_exhausted[tier] = ra;
     }
+    pending.length = 0; // 基线轮不打满上报
     state.last_activity_at = snap.timestamp;
     saveState(state);
     log(`baseline recorded @${snap.timestamp}, no historical session-activity`);
   } else if (Date.parse(snap.timestamp) > Date.parse(state.last_activity_at)) {
-    await sendSignal('session-activity', { activity_at: snap.timestamp });
-    state.last_activity_at = snap.timestamp;
-    log(`new snapshot @${snap.timestamp} -> session-activity sent`);
+    pending.push({
+      eventType: 'session-activity',
+      payload: { activity_at: snap.timestamp },
+      apply: () => { state.last_activity_at = snap.timestamp; },
+    });
   } else {
     log('no new snapshot, skip');
-  }
-
-  // 打满上报（本地按 reset_at 去重；云端打满标志兜底）
-  for (const tier of tiers) {
-    const ra = resetAtOf(rl, tier);
-    if (ra && state.reported_exhausted[tier] === ra) {
-      log(`${tier} exhausted already reported, skip`);
-      continue;
-    }
-    await sendSignal('quota-exhausted', ra ? { tier, reset_at: ra } : { tier });
-    if (ra) state.reported_exhausted[tier] = ra;
-  }
-  // 窗口恢复正常后清掉对应去重键，下次打满（新窗口）可再次上报
-  for (const tier of ['5h', 'weekly']) {
-    if (!tiers.includes(tier)) delete state.reported_exhausted[tier];
   }
 
   // quota-sync：每轮检查云端 weekly_next 是否偏离会话日志的 secondary.resets_at，偏离才纠偏
@@ -261,14 +278,30 @@ async function main() {
       if (cur && Math.abs(Date.parse(cur) - Date.parse(want)) <= SYNC_TOLERANCE_MS) {
         log(`weekly_next already aligned (${cur}), skip quota-sync`);
       } else {
-        await sendSignal('quota-sync', {
-          weekly: { reset_at: want },
-          raw: {
-            primary_used_percent: rl.primary?.used_percent ?? null,
-            secondary_used_percent: rl.secondary?.used_percent ?? null,
+        pending.push({
+          eventType: 'quota-sync',
+          payload: {
+            weekly: { reset_at: want },
+            raw: {
+              primary_used_percent: rl.primary?.used_percent ?? null,
+              secondary_used_percent: rl.secondary?.used_percent ?? null,
+            },
           },
+          apply: () => {},
         });
       }
+    }
+  }
+
+  if (pending.length > 0) {
+    const s = pending[0];
+    await sendSignal(s.eventType, s.payload);
+    s.apply();
+    if (s.eventType === 'session-activity') {
+      log(`new snapshot @${snap.timestamp} -> session-activity sent`);
+    }
+    if (pending.length > 1) {
+      log(`${pending.length - 1} more signal(s) deferred to next round (one signal per round)`);
     }
   }
 
