@@ -16,6 +16,14 @@ jobs:
   tick:
     runs-on: ubuntu-latest
     steps:
+      # 防呆护栏（方案 §6.1）：本 workflow 的日常入口是 cron 定时；手动运行只允许在 dev
+      # 分支做测试。忘选分支时显式失败，避免测试改动 main 的线上 state.json / 时刻表。
+      - name: 守卫：main 分支禁止手动触发
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        run: |
+          echo "::error::禁止在 main 分支手动触发 tick（测试请切到 dev/multi-platform 分支，校准线上状态请用 manual workflow）"
+          exit 1
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -28,6 +36,9 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           BARK_KEY: ${{ secrets.BARK_KEY }}
           BARK_SERVER: ${{ vars.BARK_SERVER }}
+          # 测试消息打标（方案 §6.1）：非 main 分支 → 推送标题带 [测试] 前缀、Bark 进测试分组
+          # 两个分支都返回非空字符串（'0'/'1'），不依赖空字符串的真假判断
+          PUSH_TEST: ${{ github.ref_name == 'main' && '0' || '1' }}
         run: node scripts/tick.mjs
 
       - name: Commit state
