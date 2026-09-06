@@ -413,6 +413,24 @@ async function main() {
       // （2026-09-06 CW-07 首测实测暴露）。
       const pending = []; // { eventType, payload, apply() }
 
+      // 关闭快照（MP-17）：进程「在→不在」转换的这轮，把退出事件本身排在最高优先级——
+      // 上报最后一条快照的 passive 摘要（云端 applySyncCodex 顺带做周校准）；打满/活动
+      // 信号推迟到下一轮（标志未记录，下轮照常补报）
+      if (catchUp) {
+        pending.push({
+          eventType: 'quota-close',
+          payload: {
+            five_h: rl.primary
+              ? { used_percent: rl.primary.used_percent ?? null, reset_at: resetAtOf(rl, '5h') }
+              : null,
+            weekly: rl.secondary
+              ? { used_percent: rl.secondary.used_percent ?? null, reset_at: resetAtOf(rl, 'weekly') }
+              : null,
+          },
+          apply: () => {},
+        });
+      }
+
       // 打满上报（本地按 reset_at 去重；云端打满标志兜底；一轮最多报一个层级，周层优先——
       // 层级闸门下周打满本来就压制 5h 提醒，5h 打满下一轮再报不迟）
       for (const tier of ['weekly', '5h']) {
