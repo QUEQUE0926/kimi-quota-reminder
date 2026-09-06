@@ -83,16 +83,35 @@ export async function pushAll({ title, body, level, ttl }) {
     results.push('bark: skipped (BARK_KEY not set)');
   }
 
-  // WxPusher 极简推送 SPT（方案 §6 第四路）：服务号会话投递，微信主聊天列表可见。
-  // SPT 等同密码，只存 GitHub Secrets，不进任何仓库文件。
+  // WxPusher（方案 §6 第四路）：服务号会话投递，微信主聊天列表可见。
+  // 两种凭据模式，配哪个用哪个：SPT 极简推送（WXPUSHER_SPT），
+  // 或标准应用推送（WXPUSHER_APPTOKEN + WXPUSHER_UID）。均等同密码，只存 GitHub Secrets。
   const spt = process.env.WXPUSHER_SPT;
-  if (spt) {
+  const wxAppToken = process.env.WXPUSHER_APPTOKEN;
+  const wxUid = process.env.WXPUSHER_UID;
+  if (spt || (wxAppToken && wxUid)) {
     try {
       const text = `${pushTitle}\n\n${body}`;
-      const res = await fetch(
-        `https://wxpusher.zjiecode.com/api/send/message/${encodeURIComponent(spt)}/${encodeURIComponent(text)}`,
-        { signal: AbortSignal.timeout(10000) }
-      );
+      let res;
+      if (spt) {
+        res = await fetch(
+          `https://wxpusher.zjiecode.com/api/send/message/${encodeURIComponent(spt)}/${encodeURIComponent(text)}`,
+          { signal: AbortSignal.timeout(10000) }
+        );
+      } else {
+        res = await fetch('https://wxpusher.zjiecode.com/api/send/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            appToken: wxAppToken,
+            uids: [wxUid],
+            summary: pushTitle.slice(0, 100), // 聊天列表预览文字
+            content: text,
+            contentType: 1, // 1=文本
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+      }
       const j = await res.json().catch(() => ({}));
       if (j.code !== 1000) throw new Error(`code=${j.code} ${j.msg || ''}`);
       results.push('wxpusher: ok');
@@ -100,7 +119,7 @@ export async function pushAll({ title, body, level, ttl }) {
       results.push(`wxpusher: FAIL ${e.message}`);
     }
   } else {
-    results.push('wxpusher: skipped (WXPUSHER_SPT not set)');
+    results.push('wxpusher: skipped (WXPUSHER_SPT / WXPUSHER_APPTOKEN+UID not set)');
   }
 
   for (const r of results) console.log(r);
