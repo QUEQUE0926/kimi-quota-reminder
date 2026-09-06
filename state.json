@@ -22,7 +22,7 @@
       "weekly_exhausted": false
     },
     "workbuddy": {
-      "monthly_anchor": "2026-09-05T14:00:00.000Z",
+      "monthly_anchor": null,
       "monthly_next": null
     }
   },
