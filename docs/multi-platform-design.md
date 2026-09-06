@@ -125,3 +125,71 @@ Kimi 的 5h 边界是固定时刻表（anchor 按 5h 步长递推）；Codex 的
 ## 10. 配套测试用例
 
 见同目录 `multi-platform-test-cases.md`（编号 MP-01 起）。
+
+---
+
+## 11. 实施结果（2026-09-06，dev/multi-platform 实测完成）
+
+### 11.1 代码落地
+
+- 新增 `scripts/platforms.mjs` 共享层：平台注册表（label / tiers / sliding5h / scheduledMonthly）、
+  state v1→v2 迁移（`loadState`，幂等，日志 `migrated state v1 -> v2`）、`ensurePlatform` 懒建命名空间、
+  `nextMonthlyReset`（日历月递推）等公共函数。signal / tick / manual 三入口统一走这一层。
+- `signal.mjs`：payload 支持可选 `platform`（缺省 kimi）；新增 `session-activity`（Codex 滑动锚点：
+  首开 / 窗口内不动 / 结束后重开三种路径，日志分别为 `new 5h window opened` / `window in progress, anchor kept`）；
+  打满信号按平台路由、去重规则不变；Kimi 路径逐行保持原行为。
+- `tick.mjs`：按 `state.platforms` 逐平台独立评估。Codex 跨边界后推 ✅/ℹ️「5 小时窗口已可用」
+  并将 anchor 置 null（不递推）；周层 +7d 递推、周打满压制 5h、周重置连带清 5h 标志。
+  WorkBuddy 纯月层：`monthly_next` 到点推「✅ WorkBuddy 月额度已重置」并按日历月递推；
+  无锚点时日志 `workbuddy: no anchor, skipped` 安全跳过。
+- `manual.mjs`：全部操作新增 `platform` 输入（默认 kimi）；**新增操作 `set_monthly_next`**
+  （MP-12 允许的直达操作，用于把下次月重置拨到过去以触发 tick）；`monthly_cap` 仅 kimi 适用，
+  其余平台显式报错；`clear_flags` 只清指定平台命名空间内的标志。
+- `push.mjs`：标题平台标签由调用方按平台 label 生成（Kimi 标题与单平台版完全一致）；
+  **Bark 分组升级已实施**：Kimi 保持 `Kimi Code 额度`（测试态 `Kimi Code 额度 · 测试`）不变，
+  其他平台为 `Kimi Code 额度 · <平台>`（测试态 `Kimi Code 额度 · <平台> · 测试`）；
+  推送标题与正文、Bark 分组均写入运行日志，便于线上核验。
+- workflow：`signal.yml` 的 repository_dispatch / workflow_dispatch 增加 `session-activity` 类型；
+  `manual.yml` 增加 `platform` 输入与 `set_monthly_next` 操作；signal / tick 的 main 防呆守卫、
+  非 main 的 `PUSH_TEST=1` 打标机制原样保留；`tick.yml` 零改动。
+
+### 11.2 实测记录（MP-00 ~ MP-15 全部通过）
+
+本地先跑无人值守回归（无 secret，推送走 skipped 分支）：`local/run-tests.mjs`（Kimi 原有用例，
+已适配 v2 结构）48/48 通过，`local/run-mp-tests.mjs`（MP-01~13 逻辑等价）48/48 通过。
+随后在 dev/multi-platform 分支逐个手动触发 workflow 实测（推送真实发出，均带 `[测试] ` 前缀）：
+
+| 用例 | 结果 | 关键证据（运行日志 / state） |
+|---|---|---|
+| MP-00 | ✅ | `codex: all exhausted flags cleared (five_h_exhausted, weekly_exhausted)`；默认 platform 只清 kimi，codex 标志不变 |
+| MP-01 | ✅ | 日志 `migrated state v1 -> v2`；schema=2，anchor/weekly_next/用量/monthly_anchor 原样保留；二次运行无迁移日志（幂等） |
+| MP-02 | ✅ | `[测试] ⚠️ Kimi Code 5 小时额度已用完`，Bark 组 `Kimi Code 额度 · 测试`（与单平台一致）；重复信号 `no duplicate push` |
+| MP-03 | ✅ | `codex: new 5h window opened`，无推送；anchor = activity_at+5h，last_activity_at 记录 |
+| MP-04 | ✅ | `codex: window in progress, anchor kept`；anchor 不变，仅 last_activity_at 更新 |
+| MP-05 | ✅ | anchor 拨到过去后再活动 → 重开新窗口（当前+5h）；本地回归另验证 exhausted 标志一并清除 |
+| MP-06 | ✅ | `[测试] ⚠️ Codex 5 小时额度已用完`，Bark 组 `Kimi Code 额度 · Codex · 测试`；kimi 命名空间不受影响；重复去重 |
+| MP-07 | ✅ | tick 推 `[测试] ✅ Codex 5 小时窗口已可用`（「上周期已打满；下次会话将开启新的 5 小时窗口。」）；`five_h_anchor=null` 不递推；ℹ️ 变体亦通过 |
+| MP-08 | ✅ | 周打满后 tick 日志 `push suppressed (层级闸门)`，无任何推送；anchor 仍置空 |
+| MP-09 | ✅ | `✅ Codex 周额度已重置`，文案含「5 小时窗口同步恢复」；weekly_next +7d，两标志皆清 |
+| MP-10 | ✅ | codex 周打满期间 kimi 侧 `✅ Kimi Code 5小时额度已重置` 照常发出；两平台字段各自独立 |
+| MP-11 | ✅ | `workbuddy: monthly_anchor = 2026-09-05T14:00:00.000Z`，`monthly_next = 2026-10-05T14:00:00.000Z` 自动算出；无推送 |
+| MP-12 | ✅ | tick 推 `✅ WorkBuddy 月额度已重置`（「月额度已在 … 刷新，下次重置 2026/10/5 22:00:00。」）；monthly_next 按日历月推进；再跑 tick `no boundary crossed, no-op` |
+| MP-13 | ✅ | 无锚点时 `workbuddy: no anchor, skipped`，成功无推送，其他平台不受影响 |
+| MP-14 | ✅ | `🔔 Codex 额度提醒测试`（正文 5h+周两行，无月层行）；`🔔 WorkBuddy 额度提醒测试`（正文仅月层一行） |
+| MP-15 | ✅ | main 手动跑 signal / tick 均 conclusion=failure（守卫报错信息原样）；dev 推送全程 `[测试] ` 前缀，Bark 分组按 §6 升级版生效 |
+
+补充说明：
+- MP-13 前置若只把 `monthly_next` 置 null 而保留 `monthly_anchor`，tick 会从 anchor 重新推导
+  `monthly_next`（日志 `monthly_next derived from anchor`）——这是 §5 设计行为（anchor 为唯一事实源），
+  不算跳过；「no anchor, skipped」只在 anchor 也为 null 时出现。实测按后者验证。
+- 测试期间 kimi 的 `five_h_anchor` 曾被 manual 校准到未来时刻以免干扰 codex 用例的「无推送」断言，
+  属 dev 分支正常校准操作；main 分支代码、state.json、tag `v1.0-single-platform` 全程零改动。
+
+### 11.3 待验证点结论
+
+| # | 结论（截至 2026-09-06） |
+|---|---|
+| V1 | **云端已就绪，采集侧待验证**。`signal.mjs` 已支持 `quota-exhausted`（codex/5h）携带 `reset_at` 时优先覆盖滑动锚点推算值（代码中带 TODO(V1) 标注）；但 Codex 限流错误是否自带重试时间、文案格式如何，需等采集侧 hook（V3）落地后首次真实打满落盘确认。 |
+| V2 | **待验证**。本期 WorkBuddy 一律手动设锚点（`set_monthly_anchor`），未调研其用量/订阅 API。 |
+| V3 | **待验证**。Codex CLI 的 hook / notify 能力未确认；采集侧不在本期范围。降级方案（wrapper 脚本记录活动时间上报 `session-activity`）在云端协议上已可直接对接。 |
+| V4 | **待观察**。Codex 周层按固定时刻表 +7d 递推实现并通过了 MP-09 实测（逻辑层），是否与真实计费周期一致需观察 2 个周期；首次使用需用 `set_weekly_next`（platform=codex）校准一次。 |
