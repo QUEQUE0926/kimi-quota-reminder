@@ -1,4 +1,4 @@
-// 三通道推送：企业微信群机器人 + ntfy.sh + Bark（iOS）
+// 四通道推送：企业微信群机器人 + ntfy.sh + Bark（iOS）+ WxPusher SPT（微信服务号）
 // 三路独立 try/catch，一路失败不挡另一路；缺少某个 secret 时跳过该路。
 // level/ttl 仅 Bark 支持：level 默认 active（亮屏提醒），passive 只进通知列表；
 // ttl 为历史记录保存秒数（如 86400 = 1 天）。
@@ -81,6 +81,26 @@ export async function pushAll({ title, body, level, ttl }) {
     }
   } else {
     results.push('bark: skipped (BARK_KEY not set)');
+  }
+
+  // WxPusher 极简推送 SPT（方案 §6 第四路）：服务号会话投递，微信主聊天列表可见。
+  // SPT 等同密码，只存 GitHub Secrets，不进任何仓库文件。
+  const spt = process.env.WXPUSHER_SPT;
+  if (spt) {
+    try {
+      const text = `${pushTitle}\n\n${body}`;
+      const res = await fetch(
+        `https://wxpusher.zjiecode.com/api/send/message/${encodeURIComponent(spt)}/${encodeURIComponent(text)}`,
+        { signal: AbortSignal.timeout(10000) }
+      );
+      const j = await res.json().catch(() => ({}));
+      if (j.code !== 1000) throw new Error(`code=${j.code} ${j.msg || ''}`);
+      results.push('wxpusher: ok');
+    } catch (e) {
+      results.push(`wxpusher: FAIL ${e.message}`);
+    }
+  } else {
+    results.push('wxpusher: skipped (WXPUSHER_SPT not set)');
   }
 
   for (const r of results) console.log(r);
