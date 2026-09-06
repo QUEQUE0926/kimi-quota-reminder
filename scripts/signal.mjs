@@ -33,16 +33,24 @@ const newlyExhausted = []; // 本次运行中新置位的打满层级（用于�
 // 「额度用光」提醒：仅在某层新打满时推一次（active 级别）
 // ttl = 距重置的秒数：重置后这条通知就是废纸，自动从 Bark 历史里删掉；重置时间未知则不设 ttl
 async function notifyExhausted(tier) {
+  // workbuddy 个人版无统一重置时间（方案 B，collection §9.4）：打满提醒不承诺具体重置
+  // 时刻（那是用户手填锚点的递推值，非真实计费周期），也不挂长 ttl——真实恢复点是
+  // 新资源包到账，watcher 观察到回落即清闸门，短通知比一条 20 天 ttl 的臆测提醒诚实
+  const personalWb =
+    platform === 'workbuddy' && String(payload.account_type || '').toLowerCase() !== 'enterprise';
   const when =
     tier === '5h' ? ps.five_h_anchor
     : tier === 'weekly' ? ps.weekly_next
-    : ps.monthly_exhausted_until || ps.monthly_next; // workbuddy 无 until 语义，用 monthly_next
+    : personalWb ? null
+    : ps.monthly_exhausted_until || ps.monthly_next; // workbuddy 企业版无 until 语义，用 monthly_next
   const body = when
     ? `预计 ${fmt(when)} 重置。` +
       (tier === 'monthly' && platform === 'kimi'
         ? '月额度重置前，5 小时 / 周额度即使到点重置也不可用。'
         : '')
-    : '重置时间未知。';
+    : tier === 'monthly' && personalWb
+      ? '各资源包独立过期，新包到账后自动恢复。'
+      : '重置时间未知。';
   const ttl = when ? Math.max(60, Math.round((Date.parse(when) - Date.now()) / 1000)) : undefined;
   await pushAll({ title: `⚠️ ${label} ${TIER_NAMES[tier]}已用完`, body, ttl, platform: label });
 }
@@ -129,12 +137,15 @@ function applySyncCodex(p) {
 //   并推一次「月额度已用完」（打满去重：已置位不重复推）；未打满回落则清标志
 function applySyncWorkbuddy(p) {
   const { monthly, raw } = p;
-  if (p.account_type === 'enterprise' && monthly?.reset_at && !Number.isNaN(Date.parse(monthly.reset_at))) {
+  const isEnterprise = String(p.account_type || '').toLowerCase() === 'enterprise';
+  if (isEnterprise && monthly?.reset_at && !Number.isNaN(Date.parse(monthly.reset_at))) {
     const want = new Date(Date.parse(monthly.reset_at)).toISOString();
     const cur = ps.monthly_next ? Date.parse(ps.monthly_next) : null;
     if (cur === null || Math.abs(cur - Date.parse(want)) > SYNC_TOLERANCE) {
       ps.monthly_anchor = want;
-      ps.monthly_next = nextMonthlyReset(want, Date.now());
+      // monthly_next 直接用上报值（want 通常就是近未来的重置点）；不套 nextMonthlyReset，
+      // 避免 want 日号在当前月不存在时（如 3/31 vs 2 月）被钳到月末、与 API 值偏离整月
+      ps.monthly_next = want;
       console.log(
         `sync(workbuddy): monthly calibrated by API reset_at -> ` +
         `anchor ${ps.monthly_anchor}, monthly_next ${ps.monthly_next}`
@@ -143,7 +154,7 @@ function applySyncWorkbuddy(p) {
     } else {
       console.log(`sync(workbuddy): monthly_next already aligned (${ps.monthly_next}), skip`);
     }
-  } else if (monthly?.reset_at && p.account_type !== 'enterprise') {
+  } else if (monthly?.reset_at && !isEnterprise) {
     console.log(`sync(workbuddy): ${p.account_type || 'personal'} account, reset_at observe-only (no anchor calibration)`);
   }
   if (num(monthly?.used) !== null) ps.monthly_used = monthly.used;
