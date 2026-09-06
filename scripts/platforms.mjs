@@ -62,7 +62,11 @@ export function defaultPlatformState(name) {
         weekly_next: null, weekly_exhausted: false,
       };
     case 'workbuddy':
-      return { monthly_anchor: null, monthly_next: null };
+      return {
+        monthly_anchor: null, monthly_next: null,
+        monthly_used: 0, monthly_limit: 0, monthly_exhausted: false,
+        last_sync: null,
+      };
     default:
       throw new Error(`unknown platform: "${name}"`);
   }
