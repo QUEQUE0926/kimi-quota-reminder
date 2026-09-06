@@ -14,7 +14,10 @@ permissions:
   contents: write
 
 concurrency:
-  group: quota-tick
+  # 与 signal/manual 共用 group（按分支隔离）：三者都改写 state.json，
+  # 独立 group + rebase -X ours 会让后完成一方的状态更新被静默丢弃。
+  # cancel-in-progress: false —— 排队等上一个写完，绝不取消在跑的 tick。
+  group: quota-state-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
