@@ -16,9 +16,8 @@ const now = Date.now();
 let changed = false;
 const messages = [];
 
-// 用量 ≥80% 视为「接近不可用」：即使没打满，重置时也提醒（用最近一次上报的用量判断，
-// CLI 关着也不影响）。打满过用 ✅，仅高用量用 ℹ️。
-const HIGH_USAGE = 0.8;
+// 纯层级闸门（方案 §4 修订版）：不看用量百分比。只要周/月未耗尽，跨边界一律推。
+// 用量数字仅保留在 ℹ️ 文案里做信息展示。打满过用 ✅，否则 ℹ️。
 const usagePct = (used, limit) => (limit > 0 ? used / limit : 0);
 const pctText = (used, limit) => `${Math.round(usagePct(used, limit) * 100)}%（${used}/${limit}）`;
 
@@ -47,8 +46,7 @@ if (state.five_h_anchor) {
     const k = Math.floor((now - anchor) / FIVE_H) + 1;
     const next = anchor + k * FIVE_H; // 下一个未来边界
     const wasOut = state.five_h_exhausted;
-    const highUsage = usagePct(state.five_h_used, state.five_h_limit) >= HIGH_USAGE;
-    if ((wasOut || highUsage) && !state.weekly_exhausted && !monthlyActive) {
+    if (!state.weekly_exhausted && !monthlyActive) {
       messages.push({
         title: wasOut ? '✅ Kimi Code 5小时额度已重置' : 'ℹ️ Kimi Code 5小时额度已重置',
         body: wasOut
@@ -68,8 +66,7 @@ if (state.weekly_next) {
   let wn = Date.parse(state.weekly_next);
   if (now >= wn) {
     const wasOut = state.weekly_exhausted;
-    const highUsage = usagePct(state.weekly_used, state.weekly_limit) >= HIGH_USAGE;
-    if ((wasOut || highUsage) && !monthlyActive) {
+    if (!monthlyActive) {
       messages.push({
         title: wasOut ? '✅ Kimi Code 周额度已重置' : 'ℹ️ Kimi Code 周额度已重置',
         body: wasOut
