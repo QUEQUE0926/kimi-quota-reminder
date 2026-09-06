@@ -90,12 +90,89 @@
 
 ## 全部测完后的检查清单（采集侧）
 
-- [ ] Codex 周重置校准落值正确（CW-01，已通过）
-- [ ] WorkBuddy 锚点与 monthly_next 落值正确（CW-02，已通过）
-- [ ] watcher 真实驱动开窗 / 窗口内不动 / 无活动静默（CW-03/04/05）
-- [ ] 周重置自动校准纠偏（CW-06）
-- [ ] 打满上报带精确 reset_at，V1 覆盖路径生效（CW-07），双端去重（CW-08）
-- [ ] watcher 停摆时 tick 照常推重置（CW-09）
-- [ ] WorkBuddy 月重置模拟到点推送 + 递推回真实值（CW-10）
-- [ ] 首次运行不补发历史信号（CW-11）；凭据与文件访问安全（CW-12）
-- [ ] main 分支代码、state、tag `v1.0-single-platform` 全程零改动
+- [x] Codex 周重置校准落值正确（CW-01，已通过）
+- [x] WorkBuddy 锚点与 monthly_next 落值正确（CW-02，已通过）
+- [x] watcher 真实驱动开窗 / 窗口内不动 / 无活动静默（CW-03/04/05）
+- [x] 周重置自动校准纠偏（CW-06）
+- [x] 打满上报带精确 reset_at，V1 覆盖路径生效（CW-07），双端去重（CW-08）
+- [x] watcher 停摆时 tick 照常推重置（CW-09）
+- [x] WorkBuddy 月重置模拟到点推送 + 递推回真实值（CW-10）
+- [x] 首次运行不补发历史信号（CW-11）；凭据与文件访问安全（CW-12）
+- [x] main 分支代码、state、tag `v1.0-single-platform` 全程零改动
+
+---
+
+## CW-03 ~ CW-12 实测记录（2026-09-06，全部通过 ✅）
+
+watcher 实现：`hooks/codex-watcher.mjs`（本分支）；本机安装于 `~/.kimi-code/hooks/codex-watcher.mjs`，
+状态文件 `~/.kimi-code/hooks/codex-watcher.state.json`，日志 `~/.kimi-code/hooks/logs/codex-watcher.log`。
+计划任务 `KimiQuotaCodexWatcher` 每 5 分钟一轮（注册方式见文末「附：计划任务注册」）。
+
+### 实现相对采集方案 §2 的三处偏差（均已验证为必要）
+
+1. **信号传输：测试期走 workflow_dispatch**。`repository_dispatch` 只会在默认分支 main 上运行——main 的
+   signal.yml 不支持 `session-activity`（会被直接丢弃），且 `quota-sync`/`quota-exhausted` 会运行 main 版脚本、
+   污染 main 的 state.json。因此 watcher 带 `--ref=dev/multi-platform` 时改用
+   `POST /actions/workflows/signal.yml/dispatches`（inputs 带 event_type + payload），推送自然带 `[测试]` 前缀；
+   缺省（不带 --ref）仍是方案规定的 repository_dispatch 生产形态，合并 main 后去掉 --ref 即可切换。
+2. **quota-sync 纠偏式上报**。§2 写「每次轮询上报」，与 CW-05「无新活动 → Actions 无新 signal 运行」冲突。
+   实现为：每轮读云端 `weekly_next` 与会话日志 `secondary.resets_at` 比对，偏离 >5s 才发 quota-sync 纠偏，
+   已对齐则静默（CW-05、CW-06 同时满足）。
+3. **每轮最多发一个信号**（优先级 quota-exhausted > session-activity > quota-sync，其余下一轮补发）。
+   CW-07 首测发现：同轮连发 session-activity + quota-exhausted 时云端两个 run 并行 checkout 同一份 state
+   （concurrency 组未拦住同秒触发），commit 阶段相邻字段冲突被 `git pull --rebase -X ours` 整段覆盖，
+   打满标志与 anchor 覆盖被静默丢弃（⚠️ 推送本身已发出）。watcher 侧限流后复测通过；
+   云端侧根治（commit 前 rebase 后重放信号，或串行化）留待合并 main 时评审。
+
+### 分用例证据
+
+- **CW-03 ✅**：`codex exec` 真实对话产生新快照（2026-09-06T10:07:54.110Z）；watcher 日志
+  `new snapshot @2026-09-06T10:07:54.110Z -> session-activity sent`；run 34026564056（dev，PUSH_TEST=1）
+  日志 `codex: new 5h window opened`；state `five_h_anchor = 2026-09-06T15:07:54.110Z`（= activity_at + 5h）、
+  `last_activity_at` 同步更新；无推送。
+- **CW-04 ✅**：窗口内再对话两轮（10:09:40 / 10:10:17Z），run 34026645497、34026674961 均
+  `codex: window in progress, anchor kept`；`five_h_anchor` 始终为 15:07:54.110Z 不变。
+- **CW-05 ✅**：不碰 Codex，计划任务两个自然轮（10:11:25 / 10:16:25）日志均 `no new snapshot, skip`；
+  signal workflow 运行总数保持 121 不变；云端 state 无变化。
+- **CW-06 ✅**：manual 把 weekly_next 拨歪为 2026-09-09T16:00Z → watcher 下一轮（10:19:25）检测到偏离，
+  发 quota-sync → run 34027098322 日志 `sync(codex): weekly_next -> 2026-09-07T04:25:22.000Z`（附 raw 用量落日志）；
+  state 纠回真实 `resets_at`。无需清理。
+- **CW-07 ✅**：`--snapshot-json` 调试模式构造 `used_percent=100` + `rate_limit_reached_type="primary"` 快照
+  （全程只读 .codex，不往 Codex 目录写任何文件）。run 34027427127：
+  `codex: reset_at reported by hook, anchor overridden -> 2026-09-06T14:26:27.000Z`；
+  推送 `[测试] ⚠️ Codex 5 小时额度已用完`，正文 `预计 2026/9/6 22:26:27 重置。`（= resets_at 精确值，V1 覆盖路径生效）；
+  state `five_h_exhausted=true`、`five_h_anchor=2026-09-06T14:26:27.000Z` 保留。测完 `clear_flags`（platform=codex）。
+  （注：修复前首测 run 34027168107 推送同样发出，但状态被上述并发问题覆盖丢失；该次 ⚠️ 属修复前行为。）
+- **CW-08 ✅**：同一打满快照再轮询两轮，日志均 `5h exhausted already reported, skip`，无新 dispatch；
+  手工清本地去重键强制重发同一打满 → run 34027499960 日志 `exhausted: 5h flag already set, no duplicate push`，
+  全程只有 CW-07 那一条 ⚠️。
+- **CW-09 ✅**：停用计划任务；manual `set_anchor`（codex）拨到已过时刻（2026-09-06T10:25+08）→ tick 推
+  `[测试] ℹ️ Codex 5 小时窗口已可用`（「上周期未打满；下次会话将开启新的 5 小时窗口。」），anchor 置 null 不递推——
+  watcher 停摆不丢重置提醒。恢复任务后下次 Codex 活动自动开窗（CW-03 链路已验证开窗能力）。
+- **CW-10 ✅**：manual `set_monthly_next`（workbuddy）拨到过去 → tick 推 `[测试] ✅ WorkBuddy 月额度已重置`
+  （「月额度已在 2026/9/6 10:00:00 刷新，下次重置 2026/10/1 00:00:00。」），`monthly_next` 递推回
+  2026-09-30T16:00:00.000Z（= CW-02 校准值，北京时间 2026-10-01 00:00:00）；再跑 tick `no boundary crossed, no-op`。
+- **CW-11 ✅**：watcher 首次运行（状态文件不存在，等同删除后启动）：日志
+  `baseline recorded @2026-09-06T06:02:32.299Z, no historical session-activity`，只记基线不发任何信号；
+  signal workflow 运行总数保持 118 不变。
+- **CW-12 ✅**：代码审查 + 行为核验——watcher 写操作仅 `~/.kimi-code/hooks/` 下的日志与状态文件；
+  对 `~/.codex/sessions/` 只有 readdirSync / statSync / readFileSync（只读）；PAT 仅从
+  `quota-reminder.config.json` 读取并用于请求头，不进仓库、全量日志 grep 无 PAT、无 `auth.json` 内容；
+  测试期间 main 分支最新提交停留在 10:00:36Z 的例行 tick（测试信号全部落在 dev），tag 未动。
+
+### 附：计划任务注册（每 5 分钟）
+
+注册需管理员权限（任务计划根目录创建任务），本机经 gsudo 提权执行：
+
+```powershell
+# local/register-codex-watcher-task.ps1（工作区留存同款脚本）
+$action = New-ScheduledTaskAction -Execute 'C:\Program Files\nodejs\node.exe' `
+  -Argument '"C:\Users\Administrator\.kimi-code\hooks\codex-watcher.mjs" --ref=dev/multi-platform'
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+  -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd `
+  -ExecutionTimeLimit (New-TimeSpan -Minutes 4)
+Register-ScheduledTask -TaskName 'KimiQuotaCodexWatcher' -Action $action -Trigger $trigger -Settings $settings -Force
+```
+
+合并 main 后把 `--ref=dev/multi-platform` 去掉重新注册即可切到生产形态（repository_dispatch）。
