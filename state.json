@@ -15,8 +15,8 @@
       "last_sync": "2026-09-06T09:11:42.022Z"
     },
     "codex": {
-      "five_h_anchor": "2026-09-06T08:30:00.000Z",
-      "five_h_exhausted": true,
+      "five_h_anchor": null,
+      "five_h_exhausted": false,
       "last_activity_at": "2026-09-06T09:17:44.000Z",
       "weekly_next": null,
       "weekly_exhausted": false
