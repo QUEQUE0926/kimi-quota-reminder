@@ -1,14 +1,14 @@
 {
   "five_h_anchor": "2026-09-06T20:00:18.476Z",
-  "five_h_used": 57,
+  "five_h_used": 64,
   "five_h_limit": 100,
   "weekly_next": "2026-09-12T14:00:18.476840Z",
-  "weekly_used": 61,
+  "weekly_used": 62,
   "weekly_limit": 100,
   "five_h_exhausted": false,
   "weekly_exhausted": false,
   "monthly_exhausted_until": null,
   "monthly_signal_at": null,
-  "last_sync": "2026-09-06T18:17:56.528Z",
+  "last_sync": "2026-09-06T18:46:22.555Z",
   "monthly_anchor": "2026-09-05T14:00:18.476840Z"
 }
