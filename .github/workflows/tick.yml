@@ -2,7 +2,12 @@ name: tick
 
 on:
   schedule:
+    # GitHub 高频 cron 是尽力而为调度，实测延迟可达 2~4 小时（方案 §6.2）——
+    # 保留它作为兜底；准点靠下面的 repository_dispatch 由外部 cron 叫醒。
     - cron: "*/5 * * * *"
+  repository_dispatch:
+    # 外部 cron 服务（如 cron-job.org）每 5 分钟 POST /dispatches {event_type: tick-wake}
+    types: [tick-wake]
   workflow_dispatch:
 
 permissions:
