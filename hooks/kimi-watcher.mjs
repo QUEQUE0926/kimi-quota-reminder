@@ -19,11 +19,13 @@
 //
 // 发送条件（不满足只写本地观测日志，不打扰云端提交）：
 //   基线（首次运行）/ 任一层 reset_at 变化 / 任一层打满状态翻转 / 月窗口出现 / 每日全量对账 /
-//   云端 anchor 与 API reset_at 偏差超阈值（读云端 state 比对）
+//   云端 anchor 与 API reset_at 偏差超阈值（读云端 state 比对）/
+//   用量跨过 30/50/80 档位（§12：搭 quota-sync 便车，云端阶梯去重推 🔶）
 //
-// 自适应轮询（沿用采集方案 §7）：基线 30 分钟（计划任务驱动）；任一窗口剩余 <20%（80≤used%<100）
-// 时进程内驻留每 5 分钟一轮，打满或回落后退出，安全上限 6 小时。kimi 的 5h 是固定时刻表，
-// 升频只是为了更快上报打满/重置翻转，不改变时刻表语义。周打满期间不进升频（层级闸门 §7.2）。
+// 自适应轮询（采集方案 §7 + MP 方案 §12.4 分级）：基线 30 分钟（计划任务驱动）；
+// 任一窗口 50≤used%<80 → 进程内驻留每 10 分钟一轮；80≤used%<100 → 每 5 分钟一轮；
+// 打满或回落后退出，安全上限 6 小时。kimi 的 5h 是固定时刻表，
+// 升频只是为了更快上报打满/档位/重置翻转，不改变时刻表语义。周打满期间 5h 不进升频（层级闸门 §7.2）。
 //
 // 单实例锁：~/.kimi-code/hooks/kimi-watcher.lock（PID + 时间戳 + mtime 过期 + pid 存活探测，
 // 逻辑与 codex-watcher 一致）。
@@ -40,7 +42,8 @@
 //     --auth-file      自定义 server.token 路径（调试）
 //
 // 调试开关（仅测试用，生产不带）：
-//   --boost-interval-sec=<n>     驻留轮间隔秒数，默认 300
+//   --boost-interval-sec=<n>     驻留轮间隔秒数（≥80% 档），默认 300
+//   --boost-mid-interval-sec=<n> 驻留轮间隔秒数（50~80% 档），默认 600
 //   --max-boost-rounds=<n>       驻留最多 n 轮后退出（防止测试进程挂住）
 //   --boost-start-offset-min=<n> 把驻留起点拨到 n 分钟前（测试安全上限）
 //
@@ -72,12 +75,15 @@ const HEARTBEAT_MAX_AGE = 120_000; // 实例心跳超过 2 分钟视为不存活
 const SYNC_TOLERANCE_MS = 5000; // weekly_next 与 reset_at 偏差容差
 const ALIGN_TOLERANCE_MS = 2 * 60 * 1000; // five_h_anchor 校准容差（与云端 signal.mjs 一致）
 const FIVE_H_MS = 5 * 3600 * 1000;
-const BOOST_LOW = 80; // 临额区间下界（含）
+const BOOST_LOW = 80; // 临额区间下界（含）：≥80 → 5 分钟一轮
+const BOOST_MID = 50; // 中档区间下界（含，§12.4）：50≤pct<80 → 10 分钟一轮
 const BOOST_HIGH = 100; // 上界（不含；≥100 视为已打满，靠 sync 的打满翻转上报）
+const ALERT_LADDER = [30, 50, 80]; // 档位提醒阶梯（§12，与云端 platforms.mjs 一致）
 const DWELL_LIMIT_MS = 6 * 3600 * 1000; // 驻留安全上限
 const LOCK_LIVE_MS = 10 * 60 * 1000; // 锁 mtime 小于此值视为有活实例
 
 const BOOST_INTERVAL_MS = (Number(opt('boost-interval-sec')) || 300) * 1000;
+const BOOST_MID_INTERVAL_MS = (Number(opt('boost-mid-interval-sec')) || 600) * 1000;
 const BOOST_START_OFFSET_MS = (Number(opt('boost-start-offset-min')) || 0) * 60 * 1000;
 const MAX_BOOST_ROUNDS = opt('max-boost-rounds') ? Number(opt('max-boost-rounds')) : Infinity;
 
@@ -233,6 +239,18 @@ const exhaustedOf = (w) => {
   return p !== null ? p >= 100 : false;
 };
 
+// 档位阶梯（§12）：返回用量落在的最高档（0/30/50/80/100），无数据返回 null
+const tierOf = (w) => {
+  const p = pctOf(w);
+  if (p === null) return null;
+  return p >= 100 ? 100 : ALERT_LADDER.filter((t) => p >= t).pop() || 0;
+};
+// 跳档上报判定：本次档位高于上次上报且未打满（≥100 由 exhaustion flipped 覆盖）
+const tierCrossed = (prevW, nowW) => {
+  const t = tierOf(nowW);
+  return t !== null && t < 100 && t > (tierOf(prevW) ?? 0);
+};
+
 // five_h 固定时刻表校准比对：reset_at 应落在云端 anchor + 5h·k 上（与云端 misalign 算法一致）
 function anchorDrifted(cloudAnchorIso, apiResetIso) {
   if (!cloudAnchorIso || !apiResetIso) return true;
@@ -336,6 +354,11 @@ async function main() {
         if (exNow.weekly !== exhaustedOf(prev.weekly)) reasons.push('weekly exhaustion flipped');
         if (Boolean(u.monthly) !== Boolean(prev.monthly)) reasons.push('monthly window appeared/vanished');
         if (exNow.monthly !== exhaustedOf(prev.monthly)) reasons.push('monthly exhaustion flipped');
+        // 档位跨越（§12.2）：搭 quota-sync 便车上报，云端按 *_alert 阶梯去重推 🔶
+        if (tierCrossed(prev.five_h, u.five_h))
+          reasons.push(`5h alert tier crossed (${tierOf(prev.five_h) ?? 0} -> ${tierOf(u.five_h)})`);
+        if (tierCrossed(prev.weekly, u.weekly))
+          reasons.push(`weekly alert tier crossed (${tierOf(prev.weekly) ?? 0} -> ${tierOf(u.weekly)})`);
       }
       if (daily) reasons.push('daily re-sync');
 
@@ -374,16 +397,25 @@ async function main() {
         if (daily && !DRY_RUN) state.last_daily_sync = today;
       }
 
-      // ---- 临额升频（§7.1）：周打满期间 5h 升频无意义（§7.2 层级闸门）----
+      // ---- 临额升频（§7.1 + §12.4 分级）：周打满期间 5h 升频无意义（§7.2 层级闸门）----
+      // 50≤pct<80 → 10 分钟一轮；80≤pct<100 → 5 分钟一轮（取各层最高档定间隔）
       const boostParts = [];
+      let maxPct = 0;
       if (!weeklyExhausted) {
         const p5 = pctOf(u.five_h);
-        if (p5 !== null && p5 >= BOOST_LOW && p5 < BOOST_HIGH) boostParts.push(`5h ${Math.round(p5)}%`);
+        if (p5 !== null && p5 >= BOOST_MID && p5 < BOOST_HIGH) {
+          boostParts.push(`5h ${Math.round(p5)}%`);
+          maxPct = Math.max(maxPct, p5);
+        }
       }
       const pw = pctOf(u.weekly);
-      if (pw !== null && pw >= BOOST_LOW && pw < BOOST_HIGH) boostParts.push(`weekly ${Math.round(pw)}%`);
+      if (pw !== null && pw >= BOOST_MID && pw < BOOST_HIGH) {
+        boostParts.push(`weekly ${Math.round(pw)}%`);
+        maxPct = Math.max(maxPct, pw);
+      }
       if (weeklyExhausted) log('weekly exhausted, 5h boost suppressed');
-      return { boost: boostParts.length > 0, parts: boostParts };
+      const intervalMs = maxPct >= BOOST_LOW ? BOOST_INTERVAL_MS : BOOST_MID_INTERVAL_MS;
+      return { boost: boostParts.length > 0, parts: boostParts, intervalMs };
     }
 
     // ---- 主循环：基线跑一轮即退；命中临额区间则进程内驻留（§7.1 升频）----
@@ -417,9 +449,10 @@ async function main() {
         break;
       }
 
+      const iv = r.intervalMs || BOOST_INTERVAL_MS;
       writeLock();
-      log(`boost dwell: next round in ${Math.round(BOOST_INTERVAL_MS / 1000)}s`);
-      await sleep(BOOST_INTERVAL_MS);
+      log(`boost dwell: next round in ${Math.round(iv / 1000)}s`);
+      await sleep(iv);
       writeLock();
     }
   } finally {
