@@ -14,7 +14,8 @@
 //      PackageCodes:[summary 动态取],Status:[0,3]} →
 //      data.Accounts[].CycleEndTime（周期重置时间，"YYYY-MM-DD HH:mm:ss" 北京时间无时区）
 //   企业账号另有 POST .../v2/billing/meter/get-enterprise-user-usage {}（limitNum/credit/
-//   cycleResetTime）；本账号为免费包形态，默认走 1+2。
+//   cycleResetTime）；accountType=enterprise 时会实际调用它取 reset_at（失败则回落 2 并记日志）。
+//   本账号为免费包形态，默认走 1+2。
 //
 // 信号（platform="workbuddy"）：
 //   quota-sync {account_type, monthly:{used,limit,reset_at}, raw:{packages,accounts}}
@@ -245,6 +246,25 @@ async function fetchUsage(auth) {
   }
   const accounts = packages?.data?.Accounts || [];
 
+  // 企业版（MP 链路补全）：summary/free-packages 是免费包语义（Status:[0,3]），企业额度
+  // 走 v2 企业用量接口，reset 字段为 cycleResetTime。调用失败/字段缺失不致命——
+  // 回落到免费包路径的 reset_at（可能为 null），但打日志，不能让校准链路静默失效。
+  let entReset = null;
+  if (auth.accountType === 'enterprise') {
+    try {
+      const ent = await postBilling('/v2/billing/meter/get-enterprise-user-usage', {}, auth);
+      const d = ent?.data ?? {};
+      entReset = bjIso(
+        d.cycleResetTime ?? d.CycleResetTime ?? d.cycle_reset_time ?? null
+      );
+      if (!entReset) {
+        log(`enterprise usage response has no cycleResetTime: ${JSON.stringify(d).slice(0, 200)}`);
+      }
+    } catch (e) {
+      log(`enterprise usage API failed (${e.message}), fall back to free-packages reset_at`);
+    }
+  }
+
   const sum = (k) => pkgs.reduce((a, p) => a + (Number(p[k]) || 0), 0);
   const now = Date.now();
   // 重置点取「主包」（CycleTotalCapacity 最大的包）的未来 CycleEndTime——
@@ -260,7 +280,7 @@ async function fetchUsage(auth) {
   return {
     used: sum('CycleUsedCapacity'),
     limit: sum('CycleTotalCapacity'),
-    reset_at: resets[resets.length - 1] || null, // 主包周期内最晚的重置点（整包重置）
+    reset_at: entReset || resets[resets.length - 1] || null, // 企业版优先 cycleResetTime；个人版取主包周期内最晚的重置点（整包重置）
     packages: pkgs.map((p) => ({
       code: p.PackageCode,
       used: Number(p.CycleUsedCapacity) || 0,
