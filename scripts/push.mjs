@@ -18,12 +18,13 @@ export async function pushAll({ title, body, level, ttl }) {
   const webhook = process.env.WECOM_WEBHOOK;
   if (webhook) {
     try {
+      // 必须用 text：微信插件不支持展示 markdown（方案 §6）
       const res = await fetch(webhook, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          msgtype: 'markdown',
-          markdown: { content: `## ${pushTitle}\n\n${body}` },
+          msgtype: 'text',
+          text: { content: `${pushTitle}\n\n${body}` },
         }),
         signal: AbortSignal.timeout(10000),
       });
