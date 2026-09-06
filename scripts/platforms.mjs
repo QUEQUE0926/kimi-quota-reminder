@@ -7,16 +7,27 @@ export const TZ = 'Asia/Shanghai';
 export const FIVE_H = 5 * 3600 * 1000;
 export const WEEK = 7 * 24 * 3600 * 1000;
 
+// 用量档位提醒（MP 方案 §12）：每层默认阈值 30/50/80，按平台×层级挂进注册表。
+// Kimi 月层砍掉（§12.6 V5 已验证：用量 API 无月窗口，sync 上报 monthly 恒为 null）。
+const TIERS_30_50_80 = [30, 50, 80];
+
 // 平台注册表：label 用于推送标题平台标签；tiers 决定该平台有哪些层级；
 // sliding5h = Codex 滑动锚点（session-activity 开窗，跨边界后置空不递推）；
-// scheduledMonthly = WorkBuddy 纯月层（anchor 按日历月递推出 monthly_next）。
+// scheduledMonthly = WorkBuddy 纯月层（anchor 按日历月递推出 monthly_next）；
+// alerts = 该平台参与档位提醒的层级及阈值（state 字段 <field>_alert 记录已提醒到的最高档）。
 export const PLATFORMS = {
-  kimi: { label: 'Kimi Code', tiers: ['5h', 'weekly', 'monthly'] },
-  codex: { label: 'Codex', tiers: ['5h', 'weekly'], sliding5h: true },
-  workbuddy: { label: 'WorkBuddy', tiers: ['monthly'], scheduledMonthly: true },
+  kimi: { label: 'Kimi Code', tiers: ['5h', 'weekly', 'monthly'],
+    alerts: { '5h': TIERS_30_50_80, weekly: TIERS_30_50_80 } },
+  codex: { label: 'Codex', tiers: ['5h', 'weekly'], sliding5h: true,
+    alerts: { '5h': TIERS_30_50_80, weekly: TIERS_30_50_80 } },
+  workbuddy: { label: 'WorkBuddy', tiers: ['monthly'], scheduledMonthly: true,
+    alerts: { monthly: TIERS_30_50_80 } },
 };
 
 export const TIER_NAMES = { '5h': '5 小时额度', weekly: '周额度', monthly: '月额度' };
+
+// tier → state 字段前缀（<field>_alert / <field>_exhausted）
+export const TIER_FIELD = { '5h': 'five_h', weekly: 'weekly', monthly: 'monthly' };
 
 export const fmt = (iso) =>
   iso ? new Date(iso).toLocaleString('zh-CN', { timeZone: TZ, hour12: false }) : '未知';
@@ -52,19 +63,21 @@ export function defaultPlatformState(name) {
     case 'kimi':
       return {
         five_h_anchor: null, five_h_used: 0, five_h_limit: 0, five_h_exhausted: false,
+        five_h_alert: 0,
         weekly_next: null, weekly_used: 0, weekly_limit: 0, weekly_exhausted: false,
+        weekly_alert: 0,
         monthly_anchor: null, monthly_exhausted_until: null, monthly_signal_at: null,
         last_sync: null,
       };
     case 'codex':
       return {
-        five_h_anchor: null, five_h_exhausted: false, last_activity_at: null,
-        weekly_next: null, weekly_exhausted: false,
+        five_h_anchor: null, five_h_exhausted: false, five_h_alert: 0, last_activity_at: null,
+        weekly_next: null, weekly_exhausted: false, weekly_alert: 0,
       };
     case 'workbuddy':
       return {
         monthly_anchor: null, monthly_next: null,
-        monthly_used: 0, monthly_limit: 0, monthly_exhausted: false,
+        monthly_used: 0, monthly_limit: 0, monthly_exhausted: false, monthly_alert: 0,
         last_sync: null,
       };
     default:
