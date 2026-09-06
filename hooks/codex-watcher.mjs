@@ -15,7 +15,8 @@
 //                     {tier:"5h"|"weekly", reset_at:<对应 resets_at 精确值>}（V1 覆盖路径）
 //
 // 去重：状态文件记录上次上报的快照时间戳、各打满窗口的 reset_at、上次上报的用量档位
-// 基线（last_usage，§12）；同一窗口的打满只报一次，同档不重复上报，
+// 基线（last_usage，§12）与各层 resets_at（last_reset）；同一窗口的打满只报一次，同档不重复上报。
+// 窗口重置（resets_at 变化）时按层重武装跳档基线——否则新窗口档位被旧峰值压住整窗静默。
 // 云端另有打满标志与 *_alert 阶梯去重兜底。首次运行以当前快照为基线，不补发历史 session-activity（CW-11）。
 // 限流：每轮最多发一个信号（优先级 quota-exhausted > session-activity > quota-sync），
 // 其余下一轮补发——同秒并发的两个 signal run 会因云端 commit 的 -X ours 冲突解决丢状态。
@@ -131,6 +132,7 @@ function loadState() {
       last_daily_scan: s.last_daily_scan || null,
       prev_codex_running: s.prev_codex_running === true,
       last_usage: s.last_usage || { five_h: null, weekly: null }, // 上次上报云端的 used_percent（§12 跳档比对）
+      last_reset: s.last_reset || { five_h: null, weekly: null }, // 上次观察到的各层 resets_at（窗口重置检测）
     };
   } catch {
     return {
@@ -139,6 +141,7 @@ function loadState() {
       last_daily_scan: null,
       prev_codex_running: false,
       last_usage: { five_h: null, weekly: null },
+      last_reset: { five_h: null, weekly: null },
     };
   }
 }
@@ -487,6 +490,7 @@ async function main() {
         state.last_activity_at = snap.timestamp;
         // 基线轮同样不补发档位：当前用量记为跳档比对基线（§12，对标 CW-11）
         state.last_usage = { five_h: pctOf(rl.primary), weekly: pctOf(rl.secondary) };
+        state.last_reset = { five_h: resetAtOf(rl, '5h'), weekly: resetAtOf(rl, 'weekly') };
         log(`baseline recorded @${snap.timestamp}, no historical session-activity`);
       } else if (Date.parse(snap.timestamp) > Date.parse(state.last_activity_at)) {
         // review R3：每日全量与关闭补扫撞在同一轮时让补扫优先——补扫的语义本就是「补发」，
@@ -504,6 +508,21 @@ async function main() {
         }
       } else {
         log('no new snapshot, skip');
+      }
+
+      // §12 回落重武装（codex 对称补齐）：resets_at 变化 = 窗口已重置，用量从低位重新爬升。
+      // 跳档基线不归零的话，新窗口的 30/50/80 档会全部被旧峰值压住而整窗静默。
+      // 每轮即时持久化（不依赖 sync 发送成功）——重置事实本身成立，基线就该重武装。
+      {
+        const curReset = { five_h: resetAtOf(rl, '5h'), weekly: resetAtOf(rl, 'weekly') };
+        for (const tier of ['five_h', 'weekly']) {
+          const prev = state.last_reset?.[tier];
+          if (prev && curReset[tier] && curReset[tier] !== prev) {
+            log(`${tier} window reset (${prev} -> ${curReset[tier]}), tier baseline re-armed`);
+            state.last_usage[tier] = null;
+          }
+          if (curReset[tier]) state.last_reset[tier] = curReset[tier];
+        }
       }
 
       // quota-sync：每轮检查云端 weekly_next 是否偏离会话日志的 secondary.resets_at，偏离才纠偏；
