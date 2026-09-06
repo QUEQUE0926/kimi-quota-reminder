@@ -21,6 +21,7 @@ export async function pushAll({ title, body, level, ttl, platform }) {
   const results = [];
   const pushTitle = decorate(title);
   console.log(`pushAll: ${pushTitle}`);
+  console.log(body);
 
   const webhook = process.env.WECOM_WEBHOOK;
   if (webhook) {
