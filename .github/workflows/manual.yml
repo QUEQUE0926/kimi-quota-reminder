@@ -40,6 +40,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           BARK_KEY: ${{ secrets.BARK_KEY }}
           BARK_SERVER: ${{ vars.BARK_SERVER }}
+          WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
           # 测试消息打标（方案 §6.1）：非 main 分支 → 推送标题带 [测试] 前缀、Bark 进测试分组
           # manual 不加防呆守卫（它本来就用于校准 main 线上状态），但在 dev 上跑同样会打标
           # 两个分支都返回非空字符串（'0'/'1'），不依赖空字符串的真假判断
