@@ -73,6 +73,7 @@ switch (action) {
     const cleared = [];
     if ('five_h_exhausted' in ps) { ps.five_h_exhausted = false; cleared.push('five_h_exhausted'); }
     if ('weekly_exhausted' in ps) { ps.weekly_exhausted = false; cleared.push('weekly_exhausted'); }
+    if ('monthly_exhausted' in ps) { ps.monthly_exhausted = false; cleared.push('monthly_exhausted'); }
     if ('monthly_exhausted_until' in ps) { ps.monthly_exhausted_until = null; cleared.push('monthly_exhausted_until'); }
     if ('monthly_signal_at' in ps) { ps.monthly_signal_at = null; cleared.push('monthly_signal_at'); }
     console.log(cleared.length
@@ -106,7 +107,7 @@ switch (action) {
         `周额度：下次重置 ${fmt(ps.weekly_next)}，状态 ${ps.weekly_exhausted ? '已打满，待重置' : '正常'}`,
       );
     } else if (platform === 'workbuddy') {
-      tierLines.push(`月额度：锚点 ${fmt(ps.monthly_anchor)}，下次重置 ${fmt(ps.monthly_next)}`);
+      tierLines.push(`月额度：用量 ${ps.monthly_used}/${ps.monthly_limit}，锚点 ${fmt(ps.monthly_anchor)}，下次重置 ${fmt(ps.monthly_next)}，状态 ${ps.monthly_exhausted ? '已打满，待重置' : '正常'}`);
     }
 
     await pushAll({
