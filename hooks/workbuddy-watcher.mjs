@@ -26,7 +26,8 @@
 //   used>=limit 置闸门，2026-09-07 已落地（MP-16 回归覆盖）。
 //
 // 发送条件：基线（首次）/ 聚合 used、limit 或 reset_at 任一变化 / 打满状态翻转 /
-// 每日对账。token 失效（401/403）→ 记日志跳过，应用在线刷新后下轮自动恢复（fail-open）。
+// 每日对账。另：每天 23 点一轮发 quota-close（被动 📴 每日额度快照，云端同步+出摘要，
+// 见 collection §9.3 落地记录）。token 失效（401/403）→ 记日志跳过，应用在线刷新后下轮自动恢复（fail-open）。
 //
 // 自适应轮询（采集方案 §7 同构）：基线 30 分钟一轮；剩余 <20%（80≤used%<100）时进程内
 // 驻留每 5 分钟一轮，打满或回落退出，安全上限 6 小时。
@@ -109,9 +110,13 @@ const todayStr = () => {
 function loadState() {
   try {
     const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    return { last_report: s.last_report || null, last_daily_sync: s.last_daily_sync || null };
+    return {
+      last_report: s.last_report || null,
+      last_daily_sync: s.last_daily_sync || null,
+      last_close_date: s.last_close_date || null,
+    };
   } catch {
-    return { last_report: null, last_daily_sync: null };
+    return { last_report: null, last_daily_sync: null, last_close_date: null };
   }
 }
 
@@ -336,12 +341,16 @@ async function main() {
       if (daily) log('daily re-sync round');
       const pct = pctOf(u);
       log(
-        `usage used=${u.used}/${u.limit}` +
+        `usage used=${Math.round(u.used)}/${Math.round(u.limit)}` +
           (pct !== null ? ` (${pct.toFixed(1)}%)` : '') +
           ` reset=${u.reset_at || '(unknown)'}` +
           ` packages=${u.packages.length} accounts=${u.accounts.length}` +
           (SUMMARY_JSON ? ` (from ${path.basename(SUMMARY_JSON)})` : '')
       );
+
+      // 每日 23 点：发 quota-close（📴 被动每日快照）。close 与 sync 同 payload，
+      // 云端 applySyncWorkbuddy 照样消费；当天已发过则跳过
+      const closeDue = new Date().getHours() === 23 && state.last_close_date !== today;
 
       const reasons = [];
       const prev = state.last_report;
@@ -358,7 +367,19 @@ async function main() {
       }
       if (daily) reasons.push('daily re-sync');
 
-      if (reasons.length > 0) {
+      if (closeDue) {
+        log('daily close snapshot round');
+        await sendSignal('quota-close', {
+          account_type: auth.accountType,
+          monthly: { used: u.used, limit: u.limit, reset_at: u.reset_at },
+          raw: { packages: u.packages, accounts: u.accounts },
+        });
+        if (!DRY_RUN) {
+          state.last_report = { used: u.used, limit: u.limit, reset_at: u.reset_at };
+          state.last_close_date = today;
+          if (daily) state.last_daily_sync = today;
+        }
+      } else if (reasons.length > 0) {
         log(`sync triggered: ${reasons.join('; ')}`);
         await sendSignal('quota-sync', {
           account_type: auth.accountType, // 云端据此门控：企业版才用 reset_at 校准锚点（方案 B）
