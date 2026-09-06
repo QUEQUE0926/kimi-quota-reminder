@@ -112,7 +112,7 @@
 ## MP-12 · WorkBuddy 月重置（tick，✅ 亮屏 + 递推）
 
 1. 先跑 MP-11 设好锚点
-2. 用 manual 把 `platforms.workbuddy.monthly_next` 拨到过去时间（若 manual 无直达操作，用 `set_monthly_anchor` 填一个使 `monthly_next` 落在过去的锚点值）
+2. 用 manual 把 `platforms.workbuddy.monthly_next` 拨到过去时间（直达操作：`set_monthly_next`，platform 填 `workbuddy`）
 3. **tick** 运行
 
 - 预期推送（**亮屏**）：
@@ -138,7 +138,7 @@
 ## MP-15 · 防呆与打标回归（继承主用例）
 
 - 主用例 16（main 分支手动跑 signal/tick 被拒）和用例 17（`[测试]` 前缀 + Bark 测试分组）在多平台代码下**重跑一次**，确认护栏与打标未被破坏
-- Bark 分组预期：`Kimi Code 额度 · Codex · 测试`（MP 方案 §6 分组升级生效时）或保持现有分组（未实施分组升级时）——以代码实际行为为准并在本文档修正
+- Bark 分组预期（分组升级已实施，2026-09-06 实测确认）：非 Kimi 平台为 `Kimi Code 额度 · <平台>`，dev 测试态叠加 `· 测试`（如 `Kimi Code 额度 · Codex · 测试`）；Kimi 保持 `Kimi Code 额度` / `Kimi Code 额度 · 测试` 不变
 
 ---
 
