@@ -94,8 +94,11 @@ export async function pushAll({ title, body, level, ttl }) {
       const text = `${pushTitle}\n\n${body}`;
       let res;
       if (spt) {
+        // SPT 极简接口是 GET 路径参数：服务端 Tomcat 默认拒绝路径里的编码斜杠 %2F
+        // （HTTP 400），把文本中的半角 / 换成全角 ／ 再编码。
+        const safeText = text.replace(/\//g, '／');
         res = await fetch(
-          `https://wxpusher.zjiecode.com/api/send/message/${encodeURIComponent(spt)}/${encodeURIComponent(text)}`,
+          `https://wxpusher.zjiecode.com/api/send/message/${encodeURIComponent(spt)}/${encodeURIComponent(safeText)}`,
           { signal: AbortSignal.timeout(10000) }
         );
       } else {
