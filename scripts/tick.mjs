@@ -151,13 +151,18 @@ function tickWorkbuddy(ps, label) {
   if (now >= mn) {
     // 按日历月递推到下一个未来时刻（保留时刻，非 30 天近似）
     const next = nextMonthlyReset(ps.monthly_anchor || ps.monthly_next, now);
+    const wasOut = ps.monthly_exhausted;
+    const usage = ps.monthly_limit > 0
+      ? `上周期用量 ${pctText(ps.monthly_used, ps.monthly_limit)}${wasOut ? '' : '，未打满'}。`
+      : '';
     messages.push({
       title: '✅ WorkBuddy 月额度已重置',
-      body: `月额度已在 ${fmt(mn)} 刷新，下次重置 ${fmt(next)}。`,
+      body: `月额度已在 ${fmt(mn)} 刷新，下次重置 ${fmt(next)}。${usage}`,
       ttl: 86400,
       platform: label,
     });
     ps.monthly_next = next;
+    ps.monthly_exhausted = false; // 月重置连带清打满闸门
     changed = true;
   }
 }
