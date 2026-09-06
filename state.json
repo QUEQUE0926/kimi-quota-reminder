@@ -20,6 +20,10 @@
       "last_activity_at": "2026-09-06T09:17:44.000Z",
       "weekly_next": "2026-09-13T08:30:00.000Z",
       "weekly_exhausted": false
+    },
+    "workbuddy": {
+      "monthly_anchor": "2026-09-05T14:00:00.000Z",
+      "monthly_next": "2026-10-05T14:00:00.000Z"
     }
   },
   "schema": 2
