@@ -16,7 +16,7 @@
     },
     "codex": {
       "five_h_anchor": "2026-09-06T14:17:44.000Z",
-      "five_h_exhausted": false,
+      "five_h_exhausted": true,
       "last_activity_at": "2026-09-06T09:17:44.000Z",
       "weekly_next": null,
       "weekly_exhausted": false
