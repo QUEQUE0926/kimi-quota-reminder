@@ -4,6 +4,8 @@
 //   quota-close      SessionEnd 关闭：同步状态后按规则推送额度快照
 //   session-activity Codex 专用：滑动锚点开窗（MP 方案 §4）
 // 多平台（MP 方案 §3）：payload 可带 platform 字段，缺省 = kimi（旧 hook 零改动兼容）。
+// WorkBuddy（collection §9.3）：workbuddy-watcher 的 quota-sync 由 applySyncWorkbuddy 消费——
+// monthly.reset_at 纠偏锚点（对标 applySyncCodex）、used/limit 落 state、used>=limit 置月闸门。
 import { pushAll } from './push.mjs';
 import {
   PLATFORMS, TIER_NAMES, FIVE_H, fmt, nextMonthlyReset,
@@ -11,6 +13,7 @@ import {
 } from './platforms.mjs';
 
 const ALIGN_TOLERANCE = 2 * 60 * 1000; // anchor 校准容差：2 分钟
+const SYNC_TOLERANCE = 5000; // quota-sync 纠偏容差：monthly_next 与上报 reset_at 偏差（watcher 同值）
 
 const eventType = process.env.EVENT_ACTION; // repository_dispatch 的 event_type
 const payload = JSON.parse(process.env.CLIENT_PAYLOAD || '{}') || {};
@@ -33,10 +36,12 @@ async function notifyExhausted(tier) {
   const when =
     tier === '5h' ? ps.five_h_anchor
     : tier === 'weekly' ? ps.weekly_next
-    : ps.monthly_exhausted_until;
+    : ps.monthly_exhausted_until || ps.monthly_next; // workbuddy 无 until 语义，用 monthly_next
   const body = when
     ? `预计 ${fmt(when)} 重置。` +
-      (tier === 'monthly' ? '月额度重置前，5 小时 / 周额度即使到点重置也不可用。' : '')
+      (tier === 'monthly' && platform === 'kimi'
+        ? '月额度重置前，5 小时 / 周额度即使到点重置也不可用。'
+        : '')
     : '重置时间未知。';
   const ttl = when ? Math.max(60, Math.round((Date.parse(when) - Date.now()) / 1000)) : undefined;
   await pushAll({ title: `⚠️ ${label} ${TIER_NAMES[tier]}已用完`, body, ttl, platform: label });
@@ -111,6 +116,54 @@ function applySyncCodex(p) {
     changed = true;
   }
   if (raw) console.log(`sync(codex): raw usage = ${JSON.stringify(raw)}`);
+}
+
+// WorkBuddy 同步（collection §9.3/§9.4，workbuddy-watcher 驱动）：scheduledMonthly 平台的
+// quota-sync。account_type 门控（方案 B）：
+//   · enterprise：monthly.reset_at 是 API 实测的下个周期重置时刻，比用户手填锚点权威——
+//     与 monthly_next 偏离 >5s（或无锚点）→ anchor 换源为该时刻，monthly_next 重算
+//     （对标 applySyncCodex 的纠偏，watcher 侧同用 5s 容差双向对齐，稳态互不打扰）
+//   · personal：无统一重置时间（各资源包独立过期），reset_at 仅随快照落日志观察，
+//     绝不用它动用户手填的锚点（collection §9.4）
+//   共用：used/limit 落 state（供 tick 重置文案与打满判定）；used>=limit 置 monthly_exhausted
+//   并推一次「月额度已用完」（打满去重：已置位不重复推）；未打满回落则清标志
+function applySyncWorkbuddy(p) {
+  const { monthly, raw } = p;
+  if (p.account_type === 'enterprise' && monthly?.reset_at && !Number.isNaN(Date.parse(monthly.reset_at))) {
+    const want = new Date(Date.parse(monthly.reset_at)).toISOString();
+    const cur = ps.monthly_next ? Date.parse(ps.monthly_next) : null;
+    if (cur === null || Math.abs(cur - Date.parse(want)) > SYNC_TOLERANCE) {
+      ps.monthly_anchor = want;
+      ps.monthly_next = nextMonthlyReset(want, Date.now());
+      console.log(
+        `sync(workbuddy): monthly calibrated by API reset_at -> ` +
+        `anchor ${ps.monthly_anchor}, monthly_next ${ps.monthly_next}`
+      );
+      changed = true;
+    } else {
+      console.log(`sync(workbuddy): monthly_next already aligned (${ps.monthly_next}), skip`);
+    }
+  } else if (monthly?.reset_at && p.account_type !== 'enterprise') {
+    console.log(`sync(workbuddy): ${p.account_type || 'personal'} account, reset_at observe-only (no anchor calibration)`);
+  }
+  if (num(monthly?.used) !== null) ps.monthly_used = monthly.used;
+  if (num(monthly?.limit) !== null) ps.monthly_limit = monthly.limit;
+  if (num(monthly?.used) !== null && num(monthly?.limit) > 0) {
+    if (monthly.used >= monthly.limit) {
+      if (!ps.monthly_exhausted) {
+        ps.monthly_exhausted = true;
+        newlyExhausted.push('monthly');
+        console.log('sync(workbuddy): monthly exhausted (by watcher usage), flag set');
+      }
+    } else if (ps.monthly_exhausted) {
+      // 打满后额度恢复（新资源包到账等），重置前提前解除闸门
+      ps.monthly_exhausted = false;
+      console.log('sync(workbuddy): monthly recovered before reset, flag cleared');
+    }
+  }
+  if (raw) console.log(`sync(workbuddy): raw usage = ${JSON.stringify(raw)}`);
+  ps.last_sync = nowIso;
+  changed = true;
 }
 
 // ---- quota-close：关闭时的额度快照推送 ----
@@ -273,6 +326,10 @@ if (eventType === 'quota-sync') {
     for (const t of newlyExhausted) await notifyExhausted(t);
   } else if (platform === 'codex') {
     applySyncCodex(payload);
+  } else if (platform === 'workbuddy') {
+    applySyncWorkbuddy(payload);
+    // watcher 用量兜底发现的打满：补发「额度用光」提醒（同 kimi 的 StopFailure 漏报兜底）
+    for (const t of newlyExhausted) await notifyExhausted(t);
   } else {
     console.log(`quota-sync: platform ${platform} has nothing to sync, ignored`);
   }
