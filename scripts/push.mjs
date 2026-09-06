@@ -81,7 +81,7 @@ export async function pushAll({ title, body, level, ttl, platform }) {
       });
       const j = await res.json().catch(() => ({}));
       if (j.code !== 200) throw new Error(`code=${j.code} ${j.message || ''}`);
-      results.push('bark: ok');
+      results.push(`bark: ok (group=${groupFor(platform)})`);
     } catch (e) {
       results.push(`bark: FAIL ${e.message}`);
     }
