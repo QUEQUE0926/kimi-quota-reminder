@@ -4,8 +4,16 @@
 // ttl 为历史记录保存秒数（如 86400 = 1 天）。
 import { pathToFileURL } from 'node:url';
 
+// 测试消息打标（方案 §6.1）：非 main 分支运行时，workflow 给脚本注入 PUSH_TEST=1。
+// 读到后所有通道标题统一加「[测试] 」前缀，Bark 分组换成「· 测试」——
+// 这样同一套 secret / 同一部手机就能把测试推送和真实推送分得清清楚楚。
+const TEST = process.env.PUSH_TEST === '1';
+const GROUP = TEST ? 'Kimi Code 额度 · 测试' : 'Kimi Code 额度';
+const decorate = (t) => (TEST ? `[测试] ${t}` : t);
+
 export async function pushAll({ title, body, level, ttl }) {
   const results = [];
+  const pushTitle = decorate(title);
 
   const webhook = process.env.WECOM_WEBHOOK;
   if (webhook) {
@@ -15,7 +23,7 @@ export async function pushAll({ title, body, level, ttl }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           msgtype: 'markdown',
-          markdown: { content: `## ${title}\n\n${body}` },
+          markdown: { content: `## ${pushTitle}\n\n${body}` },
         }),
         signal: AbortSignal.timeout(10000),
       });
@@ -34,7 +42,7 @@ export async function pushAll({ title, body, level, ttl }) {
     try {
       const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
         method: 'POST',
-        headers: { Title: title, Priority: '4', Tags: 'white_check_mark' },
+        headers: { Title: pushTitle, Priority: '4', Tags: 'white_check_mark' },
         body,
         signal: AbortSignal.timeout(10000),
       });
@@ -56,9 +64,9 @@ export async function pushAll({ title, body, level, ttl }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           device_key: barkKey,
-          title,
+          title: pushTitle,
           body,
-          group: 'Kimi Code 额度',
+          group: GROUP,
           level: level || 'active',
           ...(ttl ? { ttl } : {}),
         }),
