@@ -20,6 +20,7 @@ const groupFor = (platform) => {
 export async function pushAll({ title, body, level, ttl, platform }) {
   const results = [];
   const pushTitle = decorate(title);
+  console.log(`pushAll: ${pushTitle}`);
 
   const webhook = process.env.WECOM_WEBHOOK;
   if (webhook) {
