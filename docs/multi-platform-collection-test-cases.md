@@ -233,10 +233,85 @@ Register-ScheduledTask -TaskName 'KimiQuotaCodexWatcher' -Action $action -Trigge
 
 ## v2 全部测完后的检查清单
 
-- [ ] 基线 30 分钟 + 无窗口（CW-13、CW-20）
-- [ ] 每日全量只扫不发（CW-14）
-- [ ] 关闭补扫（CW-15）
-- [ ] 升频进入 / 退出三条件 / 安全上限（CW-16、CW-17）
-- [ ] 单实例锁防重叠 + 僵死接管（CW-18）
-- [ ] 周打满跳过 5h，恢复后正常（CW-19）
-- [ ] main 分支代码、state、tag `v1.0-single-platform` 全程零改动
+- [x] 基线 30 分钟（CW-13）
+- [ ] 无窗口人工观察（CW-20）——**待用户确认**
+- [x] 每日全量只扫不发（CW-14）
+- [x] 关闭补扫（CW-15）
+- [x] 升频进入 / 退出三条件 / 安全上限（CW-16、CW-17）
+- [x] 单实例锁防重叠 + 僵死接管（CW-18）
+- [x] 周打满跳过 5h，恢复后正常（CW-19）
+- [x] main 分支代码、state、tag `v1.0-single-platform` 全程零改动
+
+---
+
+## CW-13 ~ CW-19 实测记录（2026-09-06）
+
+v2 watcher 实现：`hooks/codex-watcher.mjs`（本分支，仅此一个文件）；
+本机安装于 `~/.kimi-code/hooks/codex-watcher.mjs`，状态文件 `~/.kimi-code/hooks/codex-watcher.state.json`，
+锁文件 `~/.kimi-code/hooks/codex-watcher.lock`，日志 `~/.kimi-code/hooks/logs/codex-watcher.log`。
+
+构造数据全部走 `--snapshot-json`（写在 `_cwtest/` 下），**全程只读 `~/.codex`，未向 Codex 目录写任何文件**；
+除 CW-19 取 run id 的实跑外，其余均为 `--dry-run`（不发送、不写状态）。
+
+### 实现说明（相对采集方案 §7 的补充）
+
+1. **「全量扫描」的定义**：v1 每轮只解析 mtime 最近的 10 个会话文件。v2 的「全量」
+   = 不设文件数上限、扫描全部 `rollout-*.jsonl`。方案 §7.1 未细化此点，按
+   「基线轮限量、全量轮不限量」实现——这正是每日扫一次而非每轮扫的原因（文件可能上百个）。
+2. **调试开关 4 个**（仅测试用，生产不带）：`--codex-running=true|false` 注入进程探测结果；
+   `--boost-interval-sec` 调驻留间隔（默认 300）；`--boost-start-offset-min` 把驻留起点拨到过去（测安全上限）；
+   `--max-boost-rounds` 限制驻留轮数（防测试进程挂住）。
+3. **锁在 dry-run 下同样生效**：CW-18 需要验证锁，故锁的检查/获取/释放不受 `--dry-run` 影响；
+   但 dry-run 依旧不写 state 文件（CW-11 语义不变）。
+4. **活跃判定**：`now - 快照时间戳 ≤ 15 分钟` 或 `进程在`。`--snapshot-json` 模式下同样按时间戳计算，
+   故构造「不活跃」只需把快照时间戳写到 20 分钟前（CW-17c）。
+
+### 分用例证据
+
+- **CW-13 ✅**：计划任务现状（`Get-ScheduledTask` 实读）：动作 `wscript.exe` + `codex-watcher.hidden.vbs`，
+  重复间隔 `PT30M`，`ExecutionTimeLimit=PT72H`（≥ 6 小时驻留，不会被强杀）。
+  行为侧：基线轮日志 `daily scan already done, skip` → `snapshot @2026-09-06T10:26:27.055Z primary=0% weekly=40%`
+  → `no new snapshot, skip` → `weekly_next already aligned (2026-09-07T04:25:22.000Z), skip quota-sync`；
+  端到端 1002 ms（含 node 启动与一次云端 state 读取），**零信号、无 run**。
+- **CW-14 ✅**：state 的 `last_daily_scan` 拨为 `2026-09-05` 后实跑（非 dry-run，验证落盘）：
+  日志 `daily full scan` + `daily full scan: new snapshot present, session-activity suppressed`；
+  run 后 state 为 `last_daily_scan=2026-09-06`，而 `last_activity_at` 仍停在 `2026-09-06T10:26:27.055Z` ——
+  **证明了「只扫不补发」**；全程无任何 dispatch。同日再跑一轮 → `daily scan already done, skip`，
+  且同一份新快照的 `session-activity` 照常出现（对照：抑制只作用于每日全量那一轮）。
+- **CW-15 ✅**：注入 `prev_codex_running=true` 后
+  a) 配 `--codex-running=false` + 新快照 → `codex exited, running catch-up scan`，补发 `session-activity`（dry-run）；
+  b) 换成无新活动的快照实跑 → 补扫照常、零信号，state `prev_codex_running=false` 落盘；
+  c) 再跑一轮（prev 已为 false，本轮仍不在）→ **无补扫日志**，确认无误报。
+- **CW-16 ✅**：`primary.used_percent=85` + 快照新鲜 → `boost mode entered (5h 85%, active)` →
+  `boost dwell: next round in 3s`（测试把间隔调成 3 秒）→ 第二轮 → `boost rounds cap reached (2), exit`；
+  总驻留 4 秒，**证明进程未在首轮退出**（默认间隔 300 秒）。
+- **CW-17 ✅**（四项 + 对照）：
+  a) 85% → 60%：`boost mode exited`，进程退出；
+  b) 85% → 100%：发 `quota-exhausted {"tier":"5h","reset_at":"2026-09-06T16:54:17.000Z"}` 后 `boost mode exited`；
+  c) 换成 20 分钟前的快照 + `--codex-running=false`：`boost condition not met (5h 85%, inactive)` → `boost mode exited`；
+  d) `--boost-start-offset-min=361`：`boost mode entered` 后立刻 `boost dwell limit reached, exit`；
+  对照：不拨起点时正常驻留、**不误触发上限**。
+- **CW-18 ✅**：
+  a) 造一个 mtime 为当前的锁 → 日志只有一行 `lock held by live instance, exit (9999 2026-09-06T11:50:00.000Z)`，
+  无任何信号输出，且**锁文件被保留**（未被误删）；
+  b) 把 mtime 拨到 660 秒前 → `stale lock taken over (8888 2026-09-06T11:43:00.000Z, idle 660s)`，
+  正常接管跑完一轮，退出后**锁已清理 ✅**。
+- **CW-19 ✅**：`secondary.used_percent=100`（`rate_limit_reached_type="secondary"`）+ `primary=85%`
+  → `weekly exhausted, 5h signals suppressed` + `quota-exhausted {"tier":"weekly","reset_at":"2026-09-07T04:25:22.000Z"}`，
+  **无任何 5h 信号、未进升频**；`session-activity` 因「每轮一个信号」被顺延到下一轮（优先级正确）。
+  实跑取 run id：**run 34031654318**（signal，success），云端日志
+  `PUSH_TEST: 1` → `pushAll: [测试] ⚠️ Codex 周额度已用完` → `bark: ok (group=Kimi Code 额度 · Codex · 测试)` →
+  `exhausted: weekly flag set`。恢复侧：`secondary=0%` 后 `session-activity` 照发、
+  `boost mode entered (5h 85%, active)` 恢复正常。收尾 **run 34031686901**（manual `clear_flags` platform=codex，success），
+  `weekly_exhausted=false`、`five_h_exhausted=false`。
+- **CW-20**：无窗口运行属人工观察项 —— **待用户确认**（计划任务自然触发一轮时人是否在电脑前）。
+  间接证据：vbs 启动器以窗口样式 0 启动；`tasklist` 探测加了 `windowsHide: true`，探测本身不会弹窗。
+
+### 部署状态
+
+- 计划任务 `KimiQuotaCodexWatcher` 当前已是 **wscript 无窗口 + 30 分钟**（`ExecutionTimeLimit=PT72H`）。
+  若要用 `local/register-codex-watcher-task.ps1` 的 7 小时上限重新注册，或首次重建任务，需**管理员权限**：
+  右键 → 以管理员身份运行工作区 `_fix_task.cmd`（schtasks 版，默认上限 72H），
+  或管理员 PowerShell 跑 `local/register-codex-watcher-task.ps1`（7H 版）。本轮测试未改动计划任务。
+- `main` 分支、`main` 的 state.json、tag `v1.0-single-platform`（`a45c094`）全程零改动；
+  main 的 anchor 与周用量变化来自其自身的例行 tick，与本次测试无关。
