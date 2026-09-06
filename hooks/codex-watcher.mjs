@@ -68,11 +68,12 @@ const KIMI_DIR = path.join(os.homedir(), '.kimi-code');
 const HOOKS_DIR = path.join(KIMI_DIR, 'hooks');
 const LOGS_DIR = path.join(HOOKS_DIR, 'logs');
 const CONFIG_FILE = path.join(HOOKS_DIR, 'quota-reminder.config.json');
-const LOG_FILE = path.join(LOGS_DIR, 'codex-watcher.log');
-const LOCK_FILE = path.join(HOOKS_DIR, 'codex-watcher.lock');
 
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
+// dry-run 单独落盘：复跑测试与人工排障不应把记录混进正式日志（review R5）
+const LOG_FILE = path.join(LOGS_DIR, DRY_RUN ? 'codex-watcher.dryrun.log' : 'codex-watcher.log');
+const LOCK_FILE = path.join(HOOKS_DIR, 'codex-watcher.lock');
 const opt = (name) => {
   const a = args.find((x) => x.startsWith(`--${name}=`));
   return a ? a.slice(name.length + 3) : null;
@@ -87,6 +88,7 @@ const SYNC_TOLERANCE_MS = 5000; // weekly_next 与 resets_at 偏差容差
 const BOOST_LOW = 80; // 临额区间下界（含）
 const BOOST_HIGH = 100; // 上界（不含；≥100 视为已打满，由打满信号处理而非升频）
 const ACTIVE_WINDOW_MS = 15 * 60 * 1000; // 快照在此时间内视为 Codex 活跃
+const CLOCK_SKEW_MS = 60 * 1000; // 允许的时钟漂移：快照时间戳最多超前 1 分钟
 const DWELL_LIMIT_MS = 6 * 3600 * 1000; // 驻留安全上限
 const LOCK_LIVE_MS = 10 * 60 * 1000; // 锁 mtime 小于此值视为有活实例
 
@@ -140,11 +142,27 @@ function saveState(state) {
 // ---- 单实例锁（§7.3）----
 // 驻留实例每轮刷新 mtime；新实例见活锁秒退，见僵死锁接管。异常退出没有清理机会，
 // 靠 mtime 过期兜底——所以锁里同时写 PID 和时间戳，便于人工核对是谁留的。
+//
+// review R2：进程被强杀（SIGKILL、计划任务强杀、测试超时）时 finally 不会执行，锁必然残留，
+// 只靠 mtime 要白等 10 分钟。补一步 PID 存活探测，让强杀后的锁能被立即识别为僵死。
+
+// 信号 0 只探测存在性、不真的发信号。解析不出 PID 时保守按「存活」处理，退回 mtime 判定。
+function pidAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM'; // 存在但无权限（别的用户的进程）→ 视为存活，别抢
+  }
+}
 
 function readLock() {
   try {
     const st = fs.statSync(LOCK_FILE);
-    return { ageMs: Date.now() - st.mtimeMs, text: fs.readFileSync(LOCK_FILE, 'utf8').trim() };
+    const text = fs.readFileSync(LOCK_FILE, 'utf8').trim();
+    const pid = Number(text.split(/\s+/)[0]);
+    return { ageMs: Date.now() - st.mtimeMs, text, alive: pidAlive(pid) };
   } catch {
     return null;
   }
@@ -159,11 +177,14 @@ function writeLock() {
 function acquireLock() {
   const l = readLock();
   if (l) {
-    if (l.ageMs < LOCK_LIVE_MS) {
+    if (l.ageMs < LOCK_LIVE_MS && l.alive) {
       log(`lock held by live instance, exit (${l.text})`);
       return false;
     }
-    log(`stale lock taken over (${l.text}, idle ${Math.round(l.ageMs / 1000)}s)`);
+    log(
+      `stale lock taken over (${l.text}, idle ${Math.round(l.ageMs / 1000)}s` +
+        `${l.alive ? '' : ', pid dead'})`
+    );
   }
   writeLock();
   return true;
@@ -240,6 +261,10 @@ function latestSnapshot(full = false) {
       }
     }
   }
+  if (best) {
+    best.scanned = scanList.length; // review R6：供调用方打印「扫了几个/共几个」
+    best.total = sorted.length;
+  }
   return best;
 }
 
@@ -283,7 +308,10 @@ function evaluateBoost(rl, snapTs, codexRunning, weeklyExhausted) {
   if (s !== null && s >= BOOST_LOW && s < BOOST_HIGH) parts.push(`weekly ${s}%`);
   if (parts.length === 0) return { boost: false, parts };
   const ageMs = Date.now() - Date.parse(snapTs);
-  const fresh = Number.isFinite(ageMs) && ageMs <= ACTIVE_WINDOW_MS;
+  // review R4：ageMs 为负说明快照时间戳在未来，只容忍 CLOCK_SKEW_MS 的时钟漂移。
+  // 不加下界的话，未来时间戳会被当成「刚发生」而误进驻留（实测可复现）。
+  const fresh =
+    Number.isFinite(ageMs) && ageMs >= -CLOCK_SKEW_MS && ageMs <= ACTIVE_WINDOW_MS;
   return { boost: fresh || codexRunning, parts, ageMs, fresh };
 }
 
@@ -351,7 +379,8 @@ async function main() {
       log(daily ? 'daily full scan' : 'daily scan already done, skip');
       if (catchUp) log('codex exited, running catch-up scan');
 
-      const snap = latestSnapshot(daily || catchUp);
+      const fullScan = daily || catchUp;
+      const snap = latestSnapshot(fullScan);
       if (!snap) {
         log('no codex rate_limits snapshot found, skip');
         if (probe.ok) state.prev_codex_running = probe.running;
@@ -362,6 +391,10 @@ async function main() {
       if (probe.ok) state.prev_codex_running = probe.running;
 
       const rl = snap.rate_limits;
+      // review R6：带上扫描文件数，才能从日志直接判断这轮到底是「全量」还是「限量」
+      if (snap.total !== undefined) {
+        log(`scan ${snap.scanned}/${snap.total} files${fullScan ? ' (full)' : ' (recent only)'}`);
+      }
       log(
         `snapshot @${snap.timestamp}` +
           ` primary=${rl.primary?.used_percent ?? '?'}% weekly=${rl.secondary?.used_percent ?? '?'}%` +
@@ -415,7 +448,9 @@ async function main() {
         state.last_activity_at = snap.timestamp;
         log(`baseline recorded @${snap.timestamp}, no historical session-activity`);
       } else if (Date.parse(snap.timestamp) > Date.parse(state.last_activity_at)) {
-        if (daily) {
+        // review R3：每日全量与关闭补扫撞在同一轮时让补扫优先——补扫的语义本就是「补发」，
+        // 否则跨天第一轮正好赶上 Codex 退出，补扫白跑、补发还要再等一轮。
+        if (daily && !catchUp) {
           log('daily full scan: new snapshot present, session-activity suppressed');
         } else {
           pending.push({
