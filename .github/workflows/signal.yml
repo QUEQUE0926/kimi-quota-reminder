@@ -2,7 +2,7 @@ name: signal
 
 on:
   repository_dispatch:
-    types: [quota-sync, quota-exhausted, quota-close]
+    types: [quota-sync, quota-exhausted, quota-close, session-activity]
   # 手动测试入口：Run workflow 时可选分支（测试请选 dev/multi-platform，勿污染 main 状态）
   workflow_dispatch:
     inputs:
@@ -10,7 +10,7 @@ on:
         description: 信号类型
         required: true
         type: choice
-        options: [quota-sync, quota-exhausted, quota-close]
+        options: [quota-sync, quota-exhausted, quota-close, session-activity]
       payload:
         description: 'client_payload（JSON，如 {"tier":"5h"}）'
         required: false
