@@ -8,12 +8,20 @@ import { pathToFileURL } from 'node:url';
 // 读到后所有通道标题统一加「[测试] 」前缀，Bark 分组换成「· 测试」——
 // 这样同一套 secret / 同一部手机就能把测试推送和真实推送分得清清楚楚。
 const TEST = process.env.PUSH_TEST === '1';
-const GROUP = TEST ? 'Kimi Code 额度 · 测试' : 'Kimi Code 额度';
 const decorate = (t) => (TEST ? `[测试] ${t}` : t);
 
-export async function pushAll({ title, body, level, ttl }) {
+// Bark 分组（MP 方案 §6）：非 Kimi 平台在分组里带平台标签（如「Kimi Code 额度 · Codex」），
+// Kimi 保持原分组不变；测试态再叠加「· 测试」。
+const groupFor = (platform) => {
+  const base = platform && platform !== 'Kimi Code' ? `Kimi Code 额度 · ${platform}` : 'Kimi Code 额度';
+  return TEST ? `${base} · 测试` : base;
+};
+
+export async function pushAll({ title, body, level, ttl, platform }) {
   const results = [];
   const pushTitle = decorate(title);
+  console.log(`pushAll: ${pushTitle}`);
+  console.log(body);
 
   const webhook = process.env.WECOM_WEBHOOK;
   if (webhook) {
@@ -67,7 +75,7 @@ export async function pushAll({ title, body, level, ttl }) {
           device_key: barkKey,
           title: pushTitle,
           body,
-          group: GROUP,
+          group: groupFor(platform),
           level: level || 'active',
           ...(ttl ? { ttl } : {}),
         }),
@@ -75,7 +83,7 @@ export async function pushAll({ title, body, level, ttl }) {
       });
       const j = await res.json().catch(() => ({}));
       if (j.code !== 200) throw new Error(`code=${j.code} ${j.message || ''}`);
-      results.push('bark: ok');
+      results.push(`bark: ok (group=${groupFor(platform)})`);
     } catch (e) {
       results.push(`bark: FAIL ${e.message}`);
     }
