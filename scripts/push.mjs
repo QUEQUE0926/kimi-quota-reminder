@@ -112,8 +112,10 @@ export async function pushAll({ title, body, level, ttl }) {
           signal: AbortSignal.timeout(10000),
         });
       }
-      const j = await res.json().catch(() => ({}));
-      if (j.code !== 1000) throw new Error(`code=${j.code} ${j.msg || ''}`);
+      const raw = await res.text().catch(() => '');
+      let j = {};
+      try { j = JSON.parse(raw); } catch { /* 非 JSON 返回（如被拦截的 HTML） */ }
+      if (j.code !== 1000) throw new Error(`code=${j.code} ${j.msg || ''} http=${res.status} body=${raw.slice(0, 120)}`);
       results.push('wxpusher: ok');
     } catch (e) {
       results.push(`wxpusher: FAIL ${e.message}`);
