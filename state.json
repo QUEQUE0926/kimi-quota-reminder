@@ -16,7 +16,7 @@
     },
     "codex": {
       "five_h_anchor": null,
-      "five_h_exhausted": true,
+      "five_h_exhausted": false,
       "last_activity_at": null,
       "weekly_next": null,
       "weekly_exhausted": false
