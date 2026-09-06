@@ -193,9 +193,22 @@ for (const [name, ps] of Object.entries(state.platforms || {})) {
 }
 
 // ---- 推送 ----
+// 可靠性语义（at-least-once）：消息与状态落盘不绑定。单条消息所有「已配置」通道全部失败时
+// 不落盘并以非零退出——状态保持「未提醒」，下轮 tick 基于旧状态重推该提醒；
+// 比「标记已提醒但用户没收到」的静默丢失好（GitHub 运行记录里也能看到红 run）。
+// 通道全未配置（全部 skipped）不视为失败：本来就无处可发，按正常落盘处理。
+const pushedOk = [];
 for (const m of messages) {
   console.log(`push: ${m.title}\n${m.body}`);
-  await pushAll(m);
+  const results = await pushAll(m);
+  const attempted = results.filter((r) => !r.includes('skipped')).length;
+  // 全部 skipped（通道未配置）视为成功：无处可发，按正常落盘处理
+  pushedOk.push(attempted === 0 || results.some((r) => r.includes(': ok')));
+}
+
+if (messages.length > 0 && pushedOk.every((ok) => !ok)) {
+  console.error('所有消息的所有已配置推送通道均失败，状态不落盘，下轮 tick 将重推');
+  process.exit(1);
 }
 
 // ---- heartbeat：防止仓库 60 天无活动导致定时 workflow 被停用 ----
