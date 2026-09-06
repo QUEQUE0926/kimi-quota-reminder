@@ -8,13 +8,15 @@
 // 信号（client_payload 一律带 platform="codex"）：
 //   session-activity  有新快照（快照时间戳 > 上次上报）→ {activity_at}，云端滑动锚点开窗
 //   quota-sync        每轮检查云端 weekly_next 与会话日志 secondary.resets_at 是否一致，
-//                     偏离才上报 {weekly:{reset_at}} 纠偏（无新活动且已对齐时保持静默，
-//                     满足 CW-05「无新活动不发信号」；raw 附带 used_percent 供云端日志观察）
+//                     偏离才上报纠偏；用量跨过 30/50/80 档位（§12）时也上报（payload 带
+//                     five_h/weekly 的 used_percent + reset_at，云端阶梯去重推 🔶）。
+//                     无新活动且已对齐、无跳档时保持静默（满足 CW-05「无新活动不发信号」）
 //   quota-exhausted   used_percent>=100 或 rate_limit_reached_type 非 null →
 //                     {tier:"5h"|"weekly", reset_at:<对应 resets_at 精确值>}（V1 覆盖路径）
 //
-// 去重：状态文件记录上次上报的快照时间戳与各打满窗口的 reset_at；同一窗口的打满只报一次，
-// 云端另有打满标志去重兜底。首次运行以当前快照为基线，不补发历史 session-activity（CW-11）。
+// 去重：状态文件记录上次上报的快照时间戳、各打满窗口的 reset_at、上次上报的用量档位
+// 基线（last_usage，§12）；同一窗口的打满只报一次，同档不重复上报，
+// 云端另有打满标志与 *_alert 阶梯去重兜底。首次运行以当前快照为基线，不补发历史 session-activity（CW-11）。
 // 限流：每轮最多发一个信号（优先级 quota-exhausted > session-activity > quota-sync），
 // 其余下一轮补发——同秒并发的两个 signal run 会因云端 commit 的 -X ours 冲突解决丢状态。
 //
@@ -27,8 +29,9 @@
 //      但不补发 session-activity；state 记 last_daily_scan 日期避免当天重复。
 //   2. 关闭补扫：每轮探测 Codex 桌面端进程，state 记 prev_codex_running；
 //      「在 → 不在」转换当轮立即全量扫描，且允许补发 session-activity。
-//   3. 临额升频：任一层 80 ≤ used_percent < 100 且 Codex 活跃（快照 15 分钟内有更新，
-//      或进程在）→ 本轮不退出，进程内每 5 分钟一轮完整检查，直到条件消失。
+//   3. 临额升频（§12.4 分级）：任一层 50≤used_percent<80 且 Codex 活跃 → 驻留每 10 分钟
+//      一轮；80≤used_percent<100 且活跃 → 每 5 分钟一轮；直到条件消失。
+//      活跃 = 快照 15 分钟内有更新，或进程在。
 //      驻留不改计划任务（实测改任务需管理员，见 §7.4），安全上限 6 小时强制退出。
 //
 // 单实例锁：驻留期间持锁，基线任务下一轮触发时检测到活锁立即秒退，避免重叠；
@@ -53,7 +56,8 @@
 //
 // 调试开关（仅测试用，生产不带）：
 //   --codex-running=true|false   注入进程探测结果，代替 tasklist（CW-15/CW-17c）
-//   --boost-interval-sec=<n>     驻留轮间隔秒数，默认 300（测试时调小）
+//   --boost-interval-sec=<n>     驻留轮间隔秒数（≥80% 档），默认 300（测试时调小）
+//   --boost-mid-interval-sec=<n> 驻留轮间隔秒数（50~80% 档），默认 600
 //   --boost-start-offset-min=<n> 把驻留起点拨到 n 分钟前（CW-17d 安全上限）
 //   --max-boost-rounds=<n>       驻留最多 n 轮后退出（防止测试进程挂住）
 //
@@ -85,8 +89,10 @@ const SNAPSHOT_JSON = opt('snapshot-json');
 
 const SCAN_FILES = 10; // 基线轮只看 mtime 最近的 N 个会话文件；全量扫描不受此限制
 const SYNC_TOLERANCE_MS = 5000; // weekly_next 与 resets_at 偏差容差
-const BOOST_LOW = 80; // 临额区间下界（含）
+const BOOST_LOW = 80; // 临额区间下界（含）：≥80 → 5 分钟一轮
+const BOOST_MID = 50; // 中档区间下界（含，§12.4）：50≤pct<80 → 10 分钟一轮
 const BOOST_HIGH = 100; // 上界（不含；≥100 视为已打满，由打满信号处理而非升频）
+const ALERT_LADDER = [30, 50, 80]; // 档位提醒阶梯（§12，与云端 platforms.mjs 一致）
 const ACTIVE_WINDOW_MS = 15 * 60 * 1000; // 快照在此时间内视为 Codex 活跃
 const CLOCK_SKEW_MS = 60 * 1000; // 允许的时钟漂移：快照时间戳最多超前 1 分钟
 const DWELL_LIMIT_MS = 6 * 3600 * 1000; // 驻留安全上限
@@ -94,6 +100,7 @@ const LOCK_LIVE_MS = 10 * 60 * 1000; // 锁 mtime 小于此值视为有活实例
 
 const CODEX_RUNNING_ARG = opt('codex-running'); // 'true' | 'false' | null
 const BOOST_INTERVAL_MS = (Number(opt('boost-interval-sec')) || 300) * 1000;
+const BOOST_MID_INTERVAL_MS = (Number(opt('boost-mid-interval-sec')) || 600) * 1000;
 const BOOST_START_OFFSET_MS = (Number(opt('boost-start-offset-min')) || 0) * 60 * 1000;
 const MAX_BOOST_ROUNDS = opt('max-boost-rounds') ? Number(opt('max-boost-rounds')) : Infinity;
 
@@ -123,6 +130,7 @@ function loadState() {
       reported_exhausted: s.reported_exhausted || {},
       last_daily_scan: s.last_daily_scan || null,
       prev_codex_running: s.prev_codex_running === true,
+      last_usage: s.last_usage || { five_h: null, weekly: null }, // 上次上报云端的 used_percent（§12 跳档比对）
     };
   } catch {
     return {
@@ -130,6 +138,7 @@ function loadState() {
       reported_exhausted: {},
       last_daily_scan: null,
       prev_codex_running: false,
+      last_usage: { five_h: null, weekly: null },
     };
   }
 }
@@ -292,27 +301,39 @@ const pctOf = (w) => {
   return Number.isFinite(v) ? v : null;
 };
 
+// 档位阶梯（§12）：返回用量落在的最高档（0/30/50/80/100），无数据返回 null
+const tierOfPct = (p) =>
+  p === null ? null : p >= 100 ? 100 : ALERT_LADDER.filter((t) => p >= t).pop() || 0;
+// 跳档上报判定：本次档位高于上次上报且未打满（≥100 走 quota-exhausted 信号）
+const tierCrossed = (prevP, nowP) => {
+  const t = tierOfPct(nowP);
+  return t !== null && t < 100 && t > (tierOfPct(prevP) ?? 0);
+};
+
 const resetAtOf = (rl, tier) => {
   const sec = tier === '5h' ? rl.primary?.resets_at : rl.secondary?.resets_at;
   return Number.isFinite(sec) ? new Date(sec * 1000).toISOString() : null;
 };
 
-// 升频判定（§7.1）：任一层落在 [80,100) 且 Codex 活跃。
+// 升频判定（§7.1 + §12.4 分级）：任一层落在 [50,100) 且 Codex 活跃；
+// ≥80 → 5 分钟一轮，50~80 → 10 分钟一轮（intervalMs 由最高档决定）。
 // 周打满直接不进升频——5h 重置在周打满期间无意义（§7.2）。
 function evaluateBoost(rl, snapTs, codexRunning, weeklyExhausted) {
   const parts = [];
   if (weeklyExhausted) return { boost: false, parts };
   const p = pctOf(rl.primary);
   const s = pctOf(rl.secondary);
-  if (p !== null && p >= BOOST_LOW && p < BOOST_HIGH) parts.push(`5h ${p}%`);
-  if (s !== null && s >= BOOST_LOW && s < BOOST_HIGH) parts.push(`weekly ${s}%`);
+  let maxPct = 0;
+  if (p !== null && p >= BOOST_MID && p < BOOST_HIGH) { parts.push(`5h ${p}%`); maxPct = Math.max(maxPct, p); }
+  if (s !== null && s >= BOOST_MID && s < BOOST_HIGH) { parts.push(`weekly ${s}%`); maxPct = Math.max(maxPct, s); }
   if (parts.length === 0) return { boost: false, parts };
   const ageMs = Date.now() - Date.parse(snapTs);
   // review R4：ageMs 为负说明快照时间戳在未来，只容忍 CLOCK_SKEW_MS 的时钟漂移。
   // 不加下界的话，未来时间戳会被当成「刚发生」而误进驻留（实测可复现）。
   const fresh =
     Number.isFinite(ageMs) && ageMs >= -CLOCK_SKEW_MS && ageMs <= ACTIVE_WINDOW_MS;
-  return { boost: fresh || codexRunning, parts, ageMs, fresh };
+  const intervalMs = maxPct >= BOOST_LOW ? BOOST_INTERVAL_MS : BOOST_MID_INTERVAL_MS;
+  return { boost: fresh || codexRunning, parts, ageMs, fresh, intervalMs };
 }
 
 async function main() {
@@ -464,6 +485,8 @@ async function main() {
         }
         pending.length = 0; // 基线轮不打满上报
         state.last_activity_at = snap.timestamp;
+        // 基线轮同样不补发档位：当前用量记为跳档比对基线（§12，对标 CW-11）
+        state.last_usage = { five_h: pctOf(rl.primary), weekly: pctOf(rl.secondary) };
         log(`baseline recorded @${snap.timestamp}, no historical session-activity`);
       } else if (Date.parse(snap.timestamp) > Date.parse(state.last_activity_at)) {
         // review R3：每日全量与关闭补扫撞在同一轮时让补扫优先——补扫的语义本就是「补发」，
@@ -483,7 +506,16 @@ async function main() {
         log('no new snapshot, skip');
       }
 
-      // quota-sync：每轮检查云端 weekly_next 是否偏离会话日志的 secondary.resets_at，偏离才纠偏
+      // quota-sync：每轮检查云端 weekly_next 是否偏离会话日志的 secondary.resets_at，偏离才纠偏；
+      // 用量跨过 30/50/80 档位（§12）时也借本信号上报 used_percent（云端按 *_alert 阶梯去重推
+      // 🔶）。两者都不命中则保持静默（CW-05）。周打满期间 5h 跳档不报（§7.2 层级闸门）。
+      const pPct = pctOf(rl.primary);
+      const sPct = pctOf(rl.secondary);
+      const crosses = [];
+      if (!weeklyExhausted && tierCrossed(state.last_usage?.five_h, pPct))
+        crosses.push(`5h ${tierOfPct(state.last_usage?.five_h) ?? 0} -> ${tierOfPct(pPct)}`);
+      if (tierCrossed(state.last_usage?.weekly, sPct))
+        crosses.push(`weekly ${tierOfPct(state.last_usage?.weekly) ?? 0} -> ${tierOfPct(sPct)}`);
       if (rl.secondary && Number.isFinite(rl.secondary.resets_at)) {
         const want = new Date(rl.secondary.resets_at * 1000).toISOString();
         let cur = null;
@@ -493,19 +525,25 @@ async function main() {
           log(`cloud state read failed (${e.message}), skip quota-sync this round`);
         }
         if (cur !== null || DRY_RUN) {
-          if (cur && Math.abs(Date.parse(cur) - Date.parse(want)) <= SYNC_TOLERANCE_MS) {
+          if (cur && Math.abs(Date.parse(cur) - Date.parse(want)) <= SYNC_TOLERANCE_MS && crosses.length === 0) {
             log(`weekly_next already aligned (${cur}), skip quota-sync`);
           } else {
+            if (crosses.length) log(`alert tier crossed: ${crosses.join(', ')}`);
             pending.push({
               eventType: 'quota-sync',
               payload: {
-                weekly: { reset_at: want },
+                five_h: rl.primary
+                  ? { used_percent: rl.primary.used_percent ?? null, reset_at: resetAtOf(rl, '5h') }
+                  : null,
+                weekly: { used_percent: rl.secondary?.used_percent ?? null, reset_at: want },
                 raw: {
                   primary_used_percent: rl.primary?.used_percent ?? null,
                   secondary_used_percent: rl.secondary?.used_percent ?? null,
                 },
               },
-              apply: () => {},
+              apply: () => {
+                state.last_usage = { five_h: pPct, weekly: sPct };
+              },
             });
           }
         }
@@ -561,9 +599,10 @@ async function main() {
         break;
       }
 
+      const iv = r.intervalMs || BOOST_INTERVAL_MS;
       writeLock(); // 刷新 mtime，向基线任务表明驻留实例还活着
-      log(`boost dwell: next round in ${Math.round(BOOST_INTERVAL_MS / 1000)}s`);
-      await sleep(BOOST_INTERVAL_MS);
+      log(`boost dwell: next round in ${Math.round(iv / 1000)}s`);
+      await sleep(iv);
       writeLock();
     }
   } finally {
