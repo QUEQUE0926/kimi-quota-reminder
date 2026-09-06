@@ -50,6 +50,7 @@ switch (action) {
       ['企业微信群机器人', !!process.env.WECOM_WEBHOOK],
       ['ntfy', !!process.env.NTFY_TOPIC],
       ['Bark', !!process.env.BARK_KEY],
+      ['WxPusher', !!process.env.WXPUSHER_SPT],
     ];
     const active = channels.filter(([, on]) => on).map(([n]) => n);
     const inactive = channels.filter(([, on]) => !on).map(([n]) => n);
