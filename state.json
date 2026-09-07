@@ -2,7 +2,7 @@
   "schema": 2,
   "platforms": {
     "kimi": {
-      "five_h_anchor": "2026-09-07T01:00:18.476Z",
+      "five_h_anchor": "2026-09-07T06:00:18.476Z",
       "five_h_used": 40,
       "five_h_limit": 100,
       "five_h_exhausted": false,
@@ -15,7 +15,7 @@
       "monthly_signal_at": null,
       "last_sync": "2026-09-06T21:24:15.241Z",
       "weekly_alert": 50,
-      "five_h_alert": 30
+      "five_h_alert": 0
     },
     "codex": {
       "five_h_anchor": null,
