@@ -10,7 +10,9 @@
 //   quota-sync        每轮检查云端 weekly_next 与会话日志 secondary.resets_at 是否一致，
 //                     偏离才上报纠偏；用量跨过 30/50/80 档位（§12）时也上报（payload 带
 //                     five_h/weekly 的 used_percent + reset_at，云端阶梯去重推 🔶）。
-//                     无新活动且已对齐、无跳档时保持静默（满足 CW-05「无新活动不发信号」）
+//                     无新活动且已对齐、无跳档时保持静默（满足 CW-05「无新活动不发信号」）。
+//                     陈旧窗口守卫：某层 resets_at 已在过去 = 旧窗口残影，该层不报档位、
+//                     不纠偏 weekly_next（否则与 tick 交替刷 🔶/ℹ️，2026-09-07 事故）
 //   quota-exhausted   used_percent>=100 或 rate_limit_reached_type 非 null →
 //                     {tier:"5h"|"weekly", reset_at:<对应 resets_at 精确值>}（V1 覆盖路径）
 //
@@ -528,44 +530,65 @@ async function main() {
       // quota-sync：每轮检查云端 weekly_next 是否偏离会话日志的 secondary.resets_at，偏离才纠偏；
       // 用量跨过 30/50/80 档位（§12）时也借本信号上报 used_percent（云端按 *_alert 阶梯去重推
       // 🔶）。两者都不命中则保持静默（CW-05）。周打满期间 5h 跳档不报（§7.2 层级闸门）。
+      // 陈旧窗口守卫（2026-09-07 线上事故）：滑动窗口会话间隙数据不更新，某层 resets_at 已在
+      // 过去 = 快照属于已结束的旧窗口——旧窗口用量不报档位（tick 已按真实重置清零重武装，重报
+      // 会把 🔶 再推一遍），过期 resets_at 也不纠偏云端 weekly_next（把它拖回过去会让 tick 每轮
+      // 重推「周额度已重置」，两者交替刷屏）。云端 applySyncCodex 另有单调闸门兜底。
       const pPct = pctOf(rl.primary);
       const sPct = pctOf(rl.secondary);
+      const nowMs = Date.now();
+      const staleOf = (tier) => {
+        const ra = resetAtOf(rl, tier);
+        return ra !== null && Date.parse(ra) <= nowMs;
+      };
+      const stale5h = staleOf('5h');
+      const staleWk = staleOf('weekly');
+      if (stale5h || staleWk) {
+        log(`stale window: ${[stale5h && '5h', staleWk && 'weekly'].filter(Boolean).join(' + ')} resets_at in the past, excluded from quota-sync`);
+      }
       const crosses = [];
-      if (!weeklyExhausted && tierCrossed(state.last_usage?.five_h, pPct))
+      if (!weeklyExhausted && !stale5h && tierCrossed(state.last_usage?.five_h, pPct))
         crosses.push(`5h ${tierOfPct(state.last_usage?.five_h) ?? 0} -> ${tierOfPct(pPct)}`);
-      if (tierCrossed(state.last_usage?.weekly, sPct))
+      if (!staleWk && tierCrossed(state.last_usage?.weekly, sPct))
         crosses.push(`weekly ${tierOfPct(state.last_usage?.weekly) ?? 0} -> ${tierOfPct(sPct)}`);
-      if (rl.secondary && Number.isFinite(rl.secondary.resets_at)) {
+      let needSync = crosses.length > 0;
+      if (!staleWk && rl.secondary && Number.isFinite(rl.secondary.resets_at)) {
         const want = new Date(rl.secondary.resets_at * 1000).toISOString();
         let cur = null;
         try {
           cur = await readCloudWeeklyNext();
         } catch (e) {
           log(`cloud state read failed (${e.message}), skip quota-sync this round`);
+          needSync = false;
         }
         if (cur !== null || DRY_RUN) {
-          if (cur && Math.abs(Date.parse(cur) - Date.parse(want)) <= SYNC_TOLERANCE_MS && crosses.length === 0) {
-            log(`weekly_next already aligned (${cur}), skip quota-sync`);
+          if (cur && Math.abs(Date.parse(cur) - Date.parse(want)) <= SYNC_TOLERANCE_MS) {
+            if (!needSync) log(`weekly_next already aligned (${cur}), skip quota-sync`);
           } else {
-            if (crosses.length) log(`alert tier crossed: ${crosses.join(', ')}`);
-            pending.push({
-              eventType: 'quota-sync',
-              payload: {
-                five_h: rl.primary
-                  ? { used_percent: rl.primary.used_percent ?? null, reset_at: resetAtOf(rl, '5h') }
-                  : null,
-                weekly: { used_percent: rl.secondary?.used_percent ?? null, reset_at: want },
-                raw: {
-                  primary_used_percent: rl.primary?.used_percent ?? null,
-                  secondary_used_percent: rl.secondary?.used_percent ?? null,
-                },
-              },
-              apply: () => {
-                state.last_usage = { five_h: pPct, weekly: sPct };
-              },
-            });
+            needSync = true;
           }
         }
+      }
+      if (needSync) {
+        if (crosses.length) log(`alert tier crossed: ${crosses.join(', ')}`);
+        pending.push({
+          eventType: 'quota-sync',
+          payload: {
+            five_h: rl.primary && !stale5h
+              ? { used_percent: rl.primary.used_percent ?? null, reset_at: resetAtOf(rl, '5h') }
+              : null,
+            weekly: rl.secondary && !staleWk
+              ? { used_percent: rl.secondary.used_percent ?? null, reset_at: resetAtOf(rl, 'weekly') }
+              : null,
+            raw: {
+              primary_used_percent: rl.primary?.used_percent ?? null,
+              secondary_used_percent: rl.secondary?.used_percent ?? null,
+            },
+          },
+          apply: () => {
+            state.last_usage = { five_h: pPct, weekly: sPct };
+          },
+        });
       }
 
       if (pending.length > 0) {
