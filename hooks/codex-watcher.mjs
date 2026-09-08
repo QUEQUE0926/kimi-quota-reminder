@@ -32,9 +32,8 @@
 //      但不补发 session-activity；state 记 last_daily_scan 日期避免当天重复。
 //   2. 关闭补扫：每轮探测 Codex 桌面端进程，state 记 prev_codex_running；
 //      「在 → 不在」转换当轮立即全量扫描，且允许补发 session-activity。
-//   3. 临额升频（§12.4 分级）：任一层 50≤used_percent<80 且 Codex 活跃 → 驻留每 10 分钟
-//      一轮；80≤used_percent<100 且活跃 → 每 5 分钟一轮；直到条件消失。
-//      活跃 = 快照 15 分钟内有更新，或进程在。
+//   3. 临额升频（§12.4 分级）：任一层 50≤used_percent<80 且 Codex 进程正在运行 → 驻留每 10 分钟
+//      一轮；80≤used_percent<100 且进程正在运行 → 每 5 分钟一轮；直到条件消失或应用退出。
 //      驻留不改计划任务（实测改任务需管理员，见 §7.4），安全上限 6 小时强制退出。
 //
 // 单实例锁：驻留期间持锁，基线任务下一轮触发时检测到活锁立即秒退，避免重叠；
@@ -96,8 +95,6 @@ const BOOST_LOW = 80; // 临额区间下界（含）：≥80 → 5 分钟一轮
 const BOOST_MID = 50; // 中档区间下界（含，§12.4）：50≤pct<80 → 10 分钟一轮
 const BOOST_HIGH = 100; // 上界（不含；≥100 视为已打满，由打满信号处理而非升频）
 const ALERT_LADDER = [30, 50, 80]; // 档位提醒阶梯（§12，与云端 platforms.mjs 一致）
-const ACTIVE_WINDOW_MS = 15 * 60 * 1000; // 快照在此时间内视为 Codex 活跃
-const CLOCK_SKEW_MS = 60 * 1000; // 允许的时钟漂移：快照时间戳最多超前 1 分钟
 const DWELL_LIMIT_MS = 6 * 3600 * 1000; // 驻留安全上限
 const LOCK_LIVE_MS = 10 * 60 * 1000; // 锁 mtime 小于此值视为有活实例
 
@@ -320,10 +317,10 @@ const resetAtOf = (rl, tier) => {
   return Number.isFinite(sec) ? new Date(sec * 1000).toISOString() : null;
 };
 
-// 升频判定（§7.1 + §12.4 分级）：任一层落在 [50,100) 且 Codex 活跃；
+// 升频判定（§7.1 + §12.4 分级）：任一层落在 [50,100) 且 Codex 进程正在运行；
 // ≥80 → 5 分钟一轮，50~80 → 10 分钟一轮（intervalMs 由最高档决定）。
 // 周打满直接不进升频——5h 重置在周打满期间无意义（§7.2）。
-function evaluateBoost(rl, snapTs, codexRunning, weeklyExhausted) {
+function evaluateBoost(rl, codexRunning, weeklyExhausted) {
   const parts = [];
   if (weeklyExhausted) return { boost: false, parts };
   const p = pctOf(rl.primary);
@@ -332,13 +329,8 @@ function evaluateBoost(rl, snapTs, codexRunning, weeklyExhausted) {
   if (p !== null && p >= BOOST_MID && p < BOOST_HIGH) { parts.push(`5h ${p}%`); maxPct = Math.max(maxPct, p); }
   if (s !== null && s >= BOOST_MID && s < BOOST_HIGH) { parts.push(`weekly ${s}%`); maxPct = Math.max(maxPct, s); }
   if (parts.length === 0) return { boost: false, parts };
-  const ageMs = Date.now() - Date.parse(snapTs);
-  // review R4：ageMs 为负说明快照时间戳在未来，只容忍 CLOCK_SKEW_MS 的时钟漂移。
-  // 不加下界的话，未来时间戳会被当成「刚发生」而误进驻留（实测可复现）。
-  const fresh =
-    Number.isFinite(ageMs) && ageMs >= -CLOCK_SKEW_MS && ageMs <= ACTIVE_WINDOW_MS;
   const intervalMs = maxPct >= BOOST_LOW ? BOOST_INTERVAL_MS : BOOST_MID_INTERVAL_MS;
-  return { boost: fresh || codexRunning, parts, ageMs, fresh, intervalMs };
+  return { boost: codexRunning, parts, intervalMs };
 }
 
 async function main() {
@@ -603,7 +595,7 @@ async function main() {
         }
       }
 
-      const b = evaluateBoost(rl, snap.timestamp, probe.running, weeklyExhausted);
+      const b = evaluateBoost(rl, probe.running, weeklyExhausted);
       if (b.parts.length > 0 && !b.boost) {
         log(`boost condition not met (${b.parts.join(', ')}, inactive)`);
       }
