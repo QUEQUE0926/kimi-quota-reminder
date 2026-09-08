@@ -189,15 +189,27 @@ async function applySyncKimi(p) {
 // Codex 同步：滑动锚点平台不做 5h 时刻表校准；仅接收周重置时间（用量字段不落盘，只记日志）。
 // 档位提醒（§12）：watcher 在跳档/升频轮上报 five_h/weekly 的 used_percent，云端据此推 🔶
 // （仅会话期间有数据，文案注明）；周打满闸门压制 5h 档位。
+// 陈旧窗口守卫（2026-09-07 线上事故）：滑动窗口会话间隙数据不更新，某层 reset_at 已在
+// 过去 = 快照属于已结束的旧窗口——weekly_next 只单调前进（旧 reset_at 拖回过去会让 tick
+// 每轮重推「周额度已重置」），旧窗口用量也不评档位（tick 清零重武装后会把 🔶 再推一遍，
+// 两者交替刷屏）。weekly_next 为空时例外采纳：tick 会沿固定时刻表 +7d 递推到正确边界。
 async function applySyncCodex(p) {
   const { five_h, weekly, raw } = p;
+  const nowMs = Date.now();
+  const staleOf = (w) => !!w?.reset_at && Date.parse(w.reset_at) <= nowMs;
   if (weekly?.reset_at) {
-    ps.weekly_next = weekly.reset_at;
-    console.log(`sync(codex): weekly_next -> ${weekly.reset_at}`);
-    changed = true;
+    const want = Date.parse(weekly.reset_at);
+    const cur = ps.weekly_next ? Date.parse(ps.weekly_next) : null;
+    if (!Number.isNaN(want) && (cur === null || want > cur)) {
+      ps.weekly_next = new Date(want).toISOString();
+      console.log(`sync(codex): weekly_next -> ${ps.weekly_next}`);
+      changed = true;
+    } else {
+      console.log(`sync(codex): weekly reset_at ${weekly.reset_at} not newer than weekly_next (${ps.weekly_next}), ignored (stale snapshot)`);
+    }
   }
   if (raw) console.log(`sync(codex): raw usage = ${JSON.stringify(raw)}`);
-  const pctOf = (w) => (num(w?.used_percent) !== null ? w.used_percent : null);
+  const pctOf = (w) => (staleOf(w) || num(w?.used_percent) === null ? null : w.used_percent);
   await evalTierAlert('weekly', pctOf(weekly), '',
     ps.weekly_next || weekly?.reset_at || null);
   await evalTierAlert('5h', pctOf(five_h), '',
