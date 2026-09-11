@@ -29,10 +29,10 @@
     "workbuddy": {
       "monthly_anchor": "2026-09-30T16:00:00.000Z",
       "monthly_next": "2026-09-30T16:00:00.000Z",
-      "monthly_used": 3603,
+      "monthly_used": 3619,
       "monthly_limit": 4519,
-      "last_sync": "2026-09-11T09:37:10.881Z",
-      "monthly_alert": 50
+      "last_sync": "2026-09-11T10:07:07.099Z",
+      "monthly_alert": 80
     }
   }
 }
