@@ -18,13 +18,13 @@
       "five_h_alert": 50
     },
     "codex": {
-      "five_h_anchor": "2026-09-19T11:23:43.815Z",
+      "five_h_anchor": "2026-09-19T16:23:51.428Z",
       "five_h_exhausted": false,
-      "last_activity_at": "2026-09-19T11:16:52.951Z",
+      "last_activity_at": "2026-09-19T11:23:51.428Z",
       "weekly_next": "2026-09-25T15:09:46.000Z",
       "weekly_exhausted": false,
       "weekly_alert": 50,
-      "five_h_alert": 80
+      "five_h_alert": 0
     },
     "workbuddy": {
       "monthly_anchor": "2026-09-30T16:00:00.000Z",
