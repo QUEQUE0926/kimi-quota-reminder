@@ -23,7 +23,7 @@
       "last_activity_at": "2026-09-29T13:35:39.080Z",
       "weekly_next": "2026-10-03T22:00:40.000Z",
       "weekly_exhausted": false,
-      "weekly_alert": 0,
+      "weekly_alert": 30,
       "five_h_alert": 0
     },
     "workbuddy": {
