@@ -18,9 +18,9 @@
       "five_h_alert": 0
     },
     "codex": {
-      "five_h_anchor": null,
+      "five_h_anchor": "2026-10-01T08:20:40.751Z",
       "five_h_exhausted": false,
-      "last_activity_at": "2026-10-01T03:00:42.681Z",
+      "last_activity_at": "2026-10-01T03:20:40.751Z",
       "weekly_next": "2026-10-03T22:00:41.000Z",
       "weekly_exhausted": false,
       "weekly_alert": 50,
