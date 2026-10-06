@@ -24,7 +24,7 @@
       "weekly_next": "2026-10-11T14:16:42.000Z",
       "weekly_exhausted": false,
       "weekly_alert": 80,
-      "five_h_alert": 0
+      "five_h_alert": 30
     },
     "workbuddy": {
       "monthly_anchor": "2026-09-30T16:00:00.000Z",
