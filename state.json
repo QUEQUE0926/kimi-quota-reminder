@@ -21,10 +21,10 @@
       "five_h_anchor": "2026-10-08T14:21:43.009Z",
       "five_h_exhausted": false,
       "last_activity_at": "2026-10-08T11:13:12.429Z",
-      "weekly_next": "2026-10-14T03:41:51.000Z",
+      "weekly_next": "2026-10-14T03:41:55.000Z",
       "weekly_exhausted": false,
       "weekly_alert": 80,
-      "five_h_alert": 0
+      "five_h_alert": 50
     },
     "workbuddy": {
       "monthly_anchor": "2026-09-30T16:00:00.000Z",
