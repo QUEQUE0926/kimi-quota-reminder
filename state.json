@@ -28,11 +28,11 @@
     },
     "workbuddy": {
       "monthly_anchor": "2026-09-30T16:00:00.000Z",
-      "monthly_next": "2026-10-30T16:00:00.000Z",
+      "monthly_next": "2026-11-30T16:00:00.000Z",
       "monthly_used": 3681,
       "monthly_limit": 5704,
       "last_sync": "2026-10-01T16:07:06.994Z",
-      "monthly_alert": 50,
+      "monthly_alert": 0,
       "monthly_exhausted": false
     }
   }
