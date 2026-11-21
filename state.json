@@ -6,7 +6,7 @@
       "five_h_used": 1,
       "five_h_limit": 100,
       "five_h_exhausted": false,
-      "weekly_next": "2026-11-21T14:00:18.476840Z",
+      "weekly_next": "2026-11-28T14:00:18.476Z",
       "weekly_used": 9,
       "weekly_limit": 100,
       "weekly_exhausted": false,
@@ -18,7 +18,7 @@
       "five_h_alert": 0
     },
     "codex": {
-      "five_h_anchor": "2026-11-21T13:58:44.469Z",
+      "five_h_anchor": null,
       "five_h_exhausted": false,
       "last_activity_at": "2026-11-21T11:31:15.998Z",
       "weekly_next": "2026-11-24T16:32:52.000Z",
